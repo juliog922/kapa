@@ -1,0 +1,61 @@
+# =============================================================================
+#  Kapa - Docker Compose
+#  Credentials are injected via --env-file (handled by the Makefile):
+#    production -> .env      development/test -> .env.dev
+#  Profile "ops" (production only): operational tooling such as the log viewer.
+# =============================================================================
+
+services:
+  postgres:
+    build:
+      context: ./services/postgres
+      args:
+        POSTGRES_VERSION: ${POSTGRES_VERSION:-18}
+    image: kapa-postgres:${KAPA_ENV:-local}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    ports:
+      # Localhost only by default; set POSTGRES_BIND=0.0.0.0 to expose on the LAN.
+      - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # Postgres 18+ images store data under /var/lib/postgresql/<major>/docker
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - kapa
+
+  # Web log viewer: live tail, search, filter and per-service views.
+  # Bound to localhost; reach it from your machine with `make deploy-logs-ui`.
+  dozzle:
+    image: amir20/dozzle:${DOZZLE_VERSION:-latest}
+    profiles: [ops]
+    restart: unless-stopped
+    environment:
+      DOZZLE_FILTER: label=com.docker.compose.project=kapa
+      DOZZLE_NO_ANALYTICS: "true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "127.0.0.1:${DOZZLE_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "/dozzle", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - kapa
+
+volumes:
+  postgres_data:
+
+networks:
+  kapa:

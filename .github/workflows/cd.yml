@@ -1,0 +1,70 @@
+# =============================================================================
+#  CD - deploys main to prike after every merge, on the self-hosted runner.
+#  Secrets live in the "production" environment (see docs/DEPLOYMENT.md).
+# =============================================================================
+name: CD
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to prike
+    runs-on: [self-hosted, linux, kapa]
+    environment: production
+    timeout-minutes: 30
+    env:
+      DEPLOY_HOST: prike
+      FORCE_COLOR: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.PRIKE_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.PRIKE_KNOWN_HOSTS }}
+          HOST: ${{ vars.PRIKE_HOST }}
+          SSH_USER: ${{ vars.PRIKE_USER }}
+          PORT: ${{ vars.PRIKE_PORT || '22' }}
+        run: |
+          set -euo pipefail
+          for v in SSH_KEY KNOWN_HOSTS HOST SSH_USER; do
+            [ -n "${!v}" ] || { echo "::error::Missing $v - configure the 'production' environment"; exit 1; }
+          done
+          dir="$RUNNER_TEMP/kapa-ssh"
+          install -d -m 700 "$dir"
+          printf '%s\n' "$SSH_KEY"     > "$dir/id_deploy"
+          printf '%s\n' "$KNOWN_HOSTS" > "$dir/known_hosts"
+          chmod 600 "$dir/id_deploy" "$dir/known_hosts"
+          cat > "$dir/config" <<CFG
+          Host prike
+            HostName $HOST
+            User $SSH_USER
+            Port $PORT
+            IdentityFile $dir/id_deploy
+            IdentitiesOnly yes
+            UserKnownHostsFile $dir/known_hosts
+            StrictHostKeyChecking yes
+            BatchMode yes
+          CFG
+          echo "KAPA_SSH=ssh -F $dir/config" >> "$GITHUB_ENV"
+
+      - name: Deploy
+        run: make deploy
+
+      - name: Verify deployment
+        run: make monitor LOG_LINES=30
+
+      - name: Remove SSH credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/kapa-ssh"

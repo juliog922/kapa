@@ -1,0 +1,55 @@
+# Kapa
+
+Monorepo for the Kapa platform. Every service is operated from the root `Makefile`.
+
+## Requirements
+
+- Docker with Compose v2 (`docker compose`)
+- GNU Make
+
+## Getting started
+
+```bash
+cp .env.example .env   # then set real production credentials
+make run
+```
+
+## Commands
+
+| Command       | Description                                                          |
+|---------------|----------------------------------------------------------------------|
+| `make run`    | Build and start services with production credentials (`.env`)        |
+| `make stop`   | Stop and remove running containers (data is kept)                    |
+| `make clean`  | Remove containers, volumes and built images — **destroys data**      |
+| `make format` | Format code (N/A for now)                                            |
+| `make lint`   | Lint code (N/A for now)                                              |
+| `make test`   | Spin up an isolated stack with dev credentials, check health, clean  |
+| `make help`   | List all targets                                                     |
+
+## Environments
+
+| File           | Purpose                       | Compose project | Host port | Committed |
+|----------------|-------------------------------|-----------------|-----------|-----------|
+| `.env`         | Production                    | `kapa`          | 5432      | No        |
+| `.env.dev`     | Development / test            | `kapa-test`     | 55432     | Yes       |
+| `.env.example` | Template for `.env`           | —               | —         | Yes       |
+
+Production and test run as separate Compose projects, so `make test` never touches
+production containers or data.
+
+## Structure
+
+```
+kapa/
+├── Makefile                  # single entry point for the whole repo
+├── docker-compose.yml
+├── .env.example / .env.dev
+└── services/
+    └── postgres/
+        ├── Dockerfile        # postgres:<version>-alpine
+        └── initdb/           # SQL/sh run once on first boot
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
