@@ -1,0 +1,11 @@
+# =============================================================================
+#  Kapa - Test overrides (used only by `make test`)
+#  Tests run inside the containers via `docker compose exec`, so no host ports
+#  are published. This keeps the test stack isolated and conflict-free.
+#  `!reset` requires Docker Compose v2.24+.
+# =============================================================================
+
+services:
+  postgres:
+    ports: !reset []
+    restart: "no"

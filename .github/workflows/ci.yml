@@ -1,0 +1,55 @@
+# =============================================================================
+#  CI - runs on every pull request to main, on the self-hosted runner.
+#  "CI result" is the required status check that gates merging.
+# =============================================================================
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  TEST_PROJECT: kapa-ci-${{ github.run_id }}
+
+jobs:
+  test:
+    name: make test
+    # Never execute code from forks on the self-hosted runner.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, kapa]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Lint
+        run: make lint
+
+      - name: Test
+        run: make test
+
+      - name: Cleanup test environment
+        if: always()
+        run: make test-clean
+
+  # A skipped job counts as "passed" for required checks, so the gate is this
+  # job instead: it fails unless `make test` actually ran and succeeded.
+  result:
+    name: CI result
+    needs: [test]
+    if: always()
+    runs-on: [self-hosted, linux, kapa]
+    timeout-minutes: 2
+    steps:
+      - name: Verify test outcome
+        run: |
+          echo "make test -> ${{ needs.test.result }}"
+          [ "${{ needs.test.result }}" = "success" ]

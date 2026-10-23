@@ -1,0 +1,10 @@
+# Paths never shipped to the deployment host (rsync --exclude-from).
+# Excluded paths are also protected from rsync --delete on the host,
+# which is what keeps the production /.env and /.release in place.
+/.git/
+/.github/
+/.env*
+/.release
+/docs/
+/.editorconfig
+/.deployignore
