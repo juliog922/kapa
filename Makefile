@@ -44,6 +44,13 @@ SINCE       ?=
 FOLLOW      ?= 1
 LOGS_UI_PORT ?= 8090
 FORCE       ?=
+
+# Self-hosted GitHub Actions runner (on demand, this machine)
+RUNNER_USER ?= github-runner
+RUNNER_DIR  ?= /home/$(RUNNER_USER)/actions-runner
+RUNNER_IDLE ?= 30
+export RUNNER_USER RUNNER_DIR RUNNER_IDLE
+
 export PROJECT DEPLOY_HOST DEPLOY_DIR KAPA_SSH LOG_LINES WATCH SERVICE \
        GREP LEVEL SINCE FOLLOW LOGS_UI_PORT FORCE
 
@@ -61,6 +68,7 @@ endef
 
 .PHONY: help run stop clean format lint test test-clean \
         deploy deploy-stop deploy-clean deploy-logs deploy-logs-ui deploy-env deploy-setup monitor \
+        runner runner-start runner-stop runner-status runner-logs \
         check-env check-docker
 
 ##@ General
@@ -136,6 +144,22 @@ deploy-env: ## Upload local .env to the host as the production config
 
 deploy-setup: ## One-time host setup: Docker, NVIDIA driver + container toolkit
 	@bash scripts/deploy-setup.sh
+
+##@ CI runner (on demand, this machine)
+runner-start: ## Start the GitHub runner in background (auto-stops after RUNNER_IDLE min idle)
+	@bash scripts/runner.sh start
+
+runner-stop: ## Stop the GitHub runner (asks if a job is running; FORCE=1 skips)
+	@bash scripts/runner.sh stop
+
+runner-status: ## Show whether the runner is online, busy or idle
+	@bash scripts/runner.sh status
+
+runner-logs: ## Follow the runner log
+	@bash scripts/runner.sh logs
+
+runner: ## Run the GitHub runner in the foreground until Ctrl+C
+	@bash scripts/runner.sh run
 
 # -----------------------------------------------------------------------------
 #  Internal checks
