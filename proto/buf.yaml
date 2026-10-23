@@ -1,0 +1,13 @@
+# Shared API contracts of every Kapa service.
+# Lint: buf STANDARD style + COMMENTS (every service, rpc, message, field and enum value is documented).
+# Breaking: FILE-level compatibility, checked against main before merging contract changes.
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - STANDARD
+    - COMMENTS
+breaking:
+  use:
+    - FILE

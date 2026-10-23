@@ -12,6 +12,8 @@ MAKEFLAGS     += --no-print-directory
 #  Project
 # -----------------------------------------------------------------------------
 PROJECT           := kapa
+# Services with their own Makefile (format/lint/check-docs/test/bench/deps are delegated).
+SERVICES          := whatsapp
 TEST_PROJECT      ?= $(PROJECT)-test
 COMPOSE_FILE      := docker-compose.yml
 COMPOSE_TEST_FILE := docker-compose.test.yml
@@ -66,7 +68,8 @@ define log
 	@printf "$(C_BLUE)$(C_BOLD)==>$(C_RESET) %s\n" "$(1)"
 endef
 
-.PHONY: help run stop clean format lint test test-clean \
+.PHONY: help run stop clean format lint check-docs test test-infra test-clean bench deps \
+        update-whatsmeow pair-test \
         deploy deploy-stop deploy-clean deploy-logs deploy-logs-ui deploy-env deploy-setup monitor \
         runner runner-start runner-stop runner-status runner-logs \
         check-env check-docker
@@ -79,7 +82,7 @@ help: ## Show this help
 	@echo
 
 ##@ Local
-run: check-docker check-env ## Build and start services with production credentials (.env)
+run: check-docker check-env deps ## Build and start services with production credentials (.env)
 	$(call log,Building and starting services [production])
 	@$(COMPOSE_PROD) up -d --build --wait
 	@printf "$(C_GREEN)✔ Services are up and healthy$(C_RESET)\n"
@@ -96,29 +99,50 @@ clean: check-docker ## Remove containers, volumes and built images (DESTROYS DAT
 	@$(COMPOSE_TEST) down --volumes --rmi all --remove-orphans 2>/dev/null || true
 	@printf "$(C_GREEN)✔ Clean complete$(C_RESET)\n"
 
-##@ Quality
-format: ## Format code (not available yet)
-	@printf "$(C_YEL)format: nothing to do yet (N/A)$(C_RESET)\n"
+##@ Quality (every service)
+format: ## Format code of every service
+	@for svc in $(SERVICES); do $(MAKE) -C services/$$svc format; done
 
-lint: ## Lint code (not available yet)
-	@printf "$(C_YEL)lint: nothing to do yet (N/A)$(C_RESET)\n"
+lint: ## Lint every service (linters, complexity, proto, generated code)
+	@for svc in $(SERVICES); do $(MAKE) -C services/$$svc lint; done
 
-test: check-docker ## Run services with dev credentials, verify health, then clean up
+check-docs: ## Check documentation of every service and proto contract
+	@for svc in $(SERVICES); do $(MAKE) -C services/$$svc check-docs; done
+
+test: test-infra ## Full test: stack smoke test + unit and integration tests of every service
+	@for svc in $(SERVICES); do $(MAKE) -C services/$$svc test; done
+
+bench: ## Benchmarks of every service under perf (BENCH=regex BENCHTIME=1s)
+	@for svc in $(SERVICES); do $(MAKE) -C services/$$svc bench; done
+
+deps: ## Make sure every service has resolved dependencies (go.sum)
+	@for svc in $(SERVICES); do $(MAKE) -C services/$$svc go.sum; done
+
+update-whatsmeow: ## WhatsApp protocol changed? Upgrade whatsmeow and test it
+	@$(MAKE) -C services/whatsapp update-whatsmeow
+
+pair-test: ## One-time: link the WhatsApp test phone for the live tests
+	@$(MAKE) -C services/whatsapp pair-test
+
+test-infra: check-docker deps ## Stack smoke test: every container healthy, gateway protocol up to date
 	$(call log,Starting isolated test environment [$(TEST_PROJECT)])
 	@trap '$(COMPOSE_TEST) down --volumes --rmi all --remove-orphans >/dev/null 2>&1 || true; \
 	       printf "$(C_BLUE)$(C_BOLD)==>$(C_RESET) Test environment cleaned\n"' EXIT; \
 	$(COMPOSE_TEST) up -d --build --wait; \
-	printf "$(C_BLUE)$(C_BOLD)==>$(C_RESET) Checking postgres readiness\n"; \
-	$(COMPOSE_TEST) exec -T postgres sh -c 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"'; \
-	printf "$(C_BLUE)$(C_BOLD)==>$(C_RESET) Running query check\n"; \
+	printf "$(C_BLUE)$(C_BOLD)==>$(C_RESET) Checking postgres\n"; \
 	result=$$($(COMPOSE_TEST) exec -T postgres sh -c 'psql -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -tAc "SELECT 1"'); \
 	if [ "$$result" != "1" ]; then \
 		printf "$(C_RED)✘ postgres query check failed (got: %s)$(C_RESET)\n" "$$result"; exit 1; \
 	fi; \
-	printf "$(C_GREEN)✔ All tests passed$(C_RESET)\n"
+	printf "$(C_BLUE)$(C_BOLD)==>$(C_RESET) Checking whatsapp gateway (health + protocol)\n"; \
+	$(COMPOSE_TEST) exec -T whatsapp /whatsapp -healthcheck; \
+	$(COMPOSE_TEST) exec -T whatsapp /whatsapp -status || { \
+		printf "$(C_RED)✘ WhatsApp protocol check failed: run make update-whatsmeow$(C_RESET)\n"; exit 1; }; \
+	printf "$(C_GREEN)✔ Stack smoke test passed$(C_RESET)\n"
 
-test-clean: check-docker ## Force-remove leftovers of the test environment
+test-clean: check-docker ## Force-remove leftovers of the test environments
 	@$(COMPOSE_TEST) down --volumes --rmi all --remove-orphans >/dev/null 2>&1 || true
+	@for svc in $(SERVICES); do $(MAKE) -C services/$$svc testdb-stop; done
 
 ##@ Deployment (host: DEPLOY_HOST, default prike)
 deploy: ## Sync the repo to the host and (re)start services

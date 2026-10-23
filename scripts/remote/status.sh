@@ -177,6 +177,29 @@ else
   fi
 fi
 
+# --- Service checks (containers labelled kapa.status) --------------------------
+# Each service can expose a status command through the compose label "kapa.status".
+# Exit codes: 0 ok, 1 issue (e.g. WhatsApp rejected the client), 2 warning (update available).
+if ((${#rows[@]} > 0)); then
+  mapfile -t checks < <(docker ps --filter "label=com.docker.compose.project=$PROJECT" --filter label=kapa.status \
+    --format '{{.Label "com.docker.compose.service"}}|{{.Names}}|{{.Label "kapa.status"}}' | sort)
+  if ((${#checks[@]} > 0)); then
+    section "Service checks"
+    for check in "${checks[@]}"; do
+      IFS='|' read -r svc name cmd <<< "$check"
+      read -r -a argv <<< "$cmd"
+      out="$(timeout 20 docker exec "$name" "${argv[@]}" 2>&1)"; rc=$?
+      case "$rc" in
+        0) mark="${GRN}✔${R}" ;;
+        2) mark="${YEL}!${R}"; warning ;;
+        *) mark="${RED}✘${R}"; issue ;;
+      esac
+      printf '  %s %s%s%s\n' "$mark" "$B" "$svc" "$R"
+      printf '%s\n' "$out" | sed 's/^/      /'
+    done
+  fi
+fi
+
 # --- Logs ---------------------------------------------------------------------
 if ((${#rows[@]} > 0)); then
   section "Recent logs · last $LOG_LINES lines${SERVICE:+ · $SERVICE}  ${D}(search & follow: make deploy-logs · web: make deploy-logs-ui)$R"

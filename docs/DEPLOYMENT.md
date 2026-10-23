@@ -114,6 +114,12 @@ In GitHub: **Settings → Environments → New environment → `production`**, t
 
 Delete the local private key copy afterwards if you don't need it.
 
+**Optional — live WhatsApp tests in CI:** add a *repository* secret (Settings → Secrets and
+variables → Actions → **Repository secrets**) `WA_TEST_PHONE` with the test phone number, and run
+`make pair-test` once on OMEN16. CI reuses the paired sessions stored in the local
+`kapa-wa-test-sessions` Docker volume. Set the repository variable `WA_TEST_PAIRING=0` to stop
+the pairing-handshake test (it shows a notification on the phone at every run).
+
 ## 4 · Protect `main` (once)
 
 Apply the ruleset in `.github/rulesets/main.json` (blocks direct pushes, force-pushes and deletion;

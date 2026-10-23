@@ -9,3 +9,6 @@ services:
   postgres:
     ports: !reset []
     restart: "no"
+  whatsapp:
+    ports: !reset []
+    restart: "no"
