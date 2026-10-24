@@ -21,7 +21,7 @@ env:
   # Live WhatsApp tests (skipped when empty). The paired test sessions live in the
   # kapa-wa-test-sessions Docker volume on the runner machine (make pair-test, once).
   WA_TEST_PHONE: ${{ secrets.WA_TEST_PHONE }}
-  WA_TEST_PAIRING: ${{ vars.WA_TEST_PAIRING || '1' }}
+  WA_TEST_PAIRING: ${{ vars.WA_TEST_PAIRING || '0' }}
 
 jobs:
   test:

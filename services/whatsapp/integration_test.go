@@ -176,8 +176,10 @@ func TestDeleteWipesStoredSession(t *testing.T) {
 	}
 }
 
-// TestUpstreamProtocol fails when whatsmeow upstream announces a newer WhatsApp protocol
-// than the one compiled in: that is the signal to run `make update-whatsmeow`.
+// TestUpstreamProtocol reports when whatsmeow upstream announces a newer WhatsApp protocol
+// than the pinned build. It warns instead of failing: upgrading whatsmeow blindly can break
+// pairing, so upgrades are deliberate (`make update-whatsmeow WHATSMEOW=<commit>`). A real
+// break (WhatsApp rejecting the client) fails the live tests and the health check instead.
 func TestUpstreamProtocol(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -187,7 +189,9 @@ func TestUpstreamProtocol(t *testing.T) {
 	}
 	ours := store.GetWAVersion().String()
 	if newer(upstream, ours) {
-		t.Fatalf("WhatsApp protocol moved: whatsmeow upstream announces %s, this build %s. Run `make update-whatsmeow` and open a PR.", upstream, ours)
+		t.Logf("UPDATE AVAILABLE: whatsmeow upstream announces protocol %s, this pinned build %s. "+
+			"Plan `make update-whatsmeow WHATSMEOW=<commit>` and re-validate pairing.", upstream, ours)
+		return
 	}
 	t.Logf("protocol %s matches whatsmeow upstream", ours)
 }
@@ -214,7 +218,8 @@ func TestPairTestDevices(t *testing.T) {
 		t.Skip("pairing only runs with `make pair-test`")
 	}
 	for _, db := range []string{liveDBA, liveDBB} {
-		t.Run(db, func(t *testing.T) {
+		// Stop at the first failure: every pairing attempt counts against WhatsApp's rate limit.
+		if !t.Run(db, func(t *testing.T) {
 			ensureDB(t, db)
 			_, c, _ := startTCP(t, db, false)
 			if st, _ := c.Status(context.Background(), &pb.StatusRequest{}); len(st.GetAccounts()) > 0 {
@@ -222,7 +227,9 @@ func TestPairTestDevices(t *testing.T) {
 				return
 			}
 			pairInteractively(t, c, phone, db)
-		})
+		}) {
+			return
+		}
 	}
 }
 
@@ -240,13 +247,22 @@ func pairInteractively(t *testing.T, c pb.WhatsAppServiceClient, phone, db strin
 		t.Fatal(err)
 	}
 	fmt.Printf("\n  >>> Device %s: on the phone open WhatsApp > Linked devices > Link a device >\n"+
-		"      Link with phone number instead, and type:   %s\n\n", db, resp.GetPairingCode())
+		"      Link with phone number instead, and type:   %s\n"+
+		"      (a code lives ~1 minute: a new one is printed here automatically, always use the latest)\n"+
+		"      Do not stop this until it prints 'linked': the session is saved only then.\n\n",
+		db, resp.GetPairingCode())
 	for {
 		ev, err := stream.Recv()
 		if err != nil {
 			t.Fatalf("pairing %s: %v", db, err)
 		}
 		switch ev.GetAccountEvent().GetState() {
+		case pb.AccountState_ACCOUNT_STATE_PAIRING:
+			if code := ev.GetAccountEvent().GetPairingCode(); code != "" {
+				fmt.Printf("  >>> New code for %s (the previous one expired):   %s\n", db, code)
+			} else {
+				fmt.Printf("  >>> %s: %s\n", db, ev.GetAccountEvent().GetDetail())
+			}
 		case pb.AccountState_ACCOUNT_STATE_CONNECTED:
 			fmt.Printf("  >>> Device %s linked.\n", db)
 			return
@@ -256,15 +272,15 @@ func pairInteractively(t *testing.T, c pb.WhatsAppServiceClient, phone, db strin
 	}
 }
 
-// waitConnected waits until phone is CONNECTED on the gateway behind c.
-func waitConnected(t *testing.T, c pb.WhatsAppServiceClient, phone string) {
+// waitConnected waits until phone is CONNECTED on the gateway of test device db.
+func waitConnected(t *testing.T, c pb.WhatsAppServiceClient, phone, db string) {
 	t.Helper()
 	deadline := time.Now().Add(60 * time.Second)
 	last := "no account"
 	for time.Now().Before(deadline) {
 		st, err := c.Status(context.Background(), &pb.StatusRequest{})
 		if err == nil && len(st.GetAccounts()) == 0 {
-			t.Fatal("test device not paired: run `make pair-test` once")
+			t.Fatalf("test device %s not paired: run `make pair-test` (it only pairs the missing devices)", db)
 		}
 		for _, a := range st.GetAccounts() {
 			if a.GetPhone() == phone && a.GetState() == pb.AccountState_ACCOUNT_STATE_CONNECTED {
@@ -274,7 +290,7 @@ func waitConnected(t *testing.T, c pb.WhatsAppServiceClient, phone string) {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Fatalf("account %s not connected after 60s (last state %s)", phone, last)
+	t.Fatalf("test device %s (%s) not connected after 60s (last state %s)", db, phone, last)
 }
 
 // TestLive runs the end-to-end checks against WhatsApp with the two paired test devices.
@@ -284,8 +300,8 @@ func TestLive(t *testing.T) {
 	ensureDB(t, liveDBB)
 	_, a, _ := startTCP(t, liveDBA, true)
 	sb, b, _ := startTCP(t, liveDBB, true)
-	waitConnected(t, a, phone)
-	waitConnected(t, b, phone)
+	waitConnected(t, a, phone, liveDBA)
+	waitConnected(t, b, phone, liveDBB)
 
 	t.Run("status", func(t *testing.T) {
 		st, err := a.Status(context.Background(), &pb.StatusRequest{})
@@ -357,12 +373,12 @@ func roundTrip(t *testing.T, sb *server, a, b pb.WhatsAppServiceClient, phone st
 }
 
 // TestLivePairingHandshake requests a real pairing code (the phone shows a notification)
-// and cancels it with Delete: it proves the pairing protocol still works. Disable with
-// WA_TEST_PAIRING=0.
+// and cancels it with Delete: it proves the pairing protocol still works. Opt-in with
+// WA_TEST_PAIRING=1: every code request counts against WhatsApp's per-number rate limit.
 func TestLivePairingHandshake(t *testing.T) {
 	phone := requirePhone(t)
-	if os.Getenv("WA_TEST_PAIRING") == "0" {
-		t.Skip("WA_TEST_PAIRING=0")
+	if os.Getenv("WA_TEST_PAIRING") != "1" {
+		t.Skip("pairing handshake is opt-in (WA_TEST_PAIRING=1): code requests are rate-limited by WhatsApp")
 	}
 	_, c, _ := startTCP(t, tempDB(t), false)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

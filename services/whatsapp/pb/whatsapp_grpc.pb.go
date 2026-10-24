@@ -40,10 +40,14 @@ const (
 // and dashes are accepted on input and stripped.
 type WhatsAppServiceClient interface {
 	// Login starts linking a phone number and returns the pairing code to type on
-	// the phone (WhatsApp > Linked devices > Link with phone number). The code is
-	// valid for about 160 seconds; the outcome arrives on Subscribe as an
-	// AccountEvent (CONNECTED or PAIR_FAILED). Calling Login for an account that
-	// already exists returns its state and no code.
+	// the phone (WhatsApp > Linked devices > Link with phone number). A code only
+	// lives about a minute: while pairing is pending, WhatsApp rotates the login
+	// session and a fresh code is published on Subscribe as an AccountEvent
+	// (PAIRING, pairing_code); always show the latest one. The outcome arrives as
+	// CONNECTED or PAIR_FAILED (after about 2.5 minutes without success). Calling
+	// Login for an account that already exists returns its state and no code.
+	// RESOURCE_EXHAUSTED means WhatsApp rate-limits code requests for that number:
+	// wait (usually hours) before retrying, every attempt can extend the block.
 	Login(ctx context.Context, in *LoginRequest, opts ...grpc.CallOption) (*LoginResponse, error)
 	// Logout unlinks the account from WhatsApp and wipes its session.
 	// Fails with FAILED_PRECONDITION while pairing is still pending.
@@ -149,10 +153,14 @@ func (c *whatsAppServiceClient) Status(ctx context.Context, in *StatusRequest, o
 // and dashes are accepted on input and stripped.
 type WhatsAppServiceServer interface {
 	// Login starts linking a phone number and returns the pairing code to type on
-	// the phone (WhatsApp > Linked devices > Link with phone number). The code is
-	// valid for about 160 seconds; the outcome arrives on Subscribe as an
-	// AccountEvent (CONNECTED or PAIR_FAILED). Calling Login for an account that
-	// already exists returns its state and no code.
+	// the phone (WhatsApp > Linked devices > Link with phone number). A code only
+	// lives about a minute: while pairing is pending, WhatsApp rotates the login
+	// session and a fresh code is published on Subscribe as an AccountEvent
+	// (PAIRING, pairing_code); always show the latest one. The outcome arrives as
+	// CONNECTED or PAIR_FAILED (after about 2.5 minutes without success). Calling
+	// Login for an account that already exists returns its state and no code.
+	// RESOURCE_EXHAUSTED means WhatsApp rate-limits code requests for that number:
+	// wait (usually hours) before retrying, every attempt can extend the block.
 	Login(context.Context, *LoginRequest) (*LoginResponse, error)
 	// Logout unlinks the account from WhatsApp and wipes its session.
 	// Fails with FAILED_PRECONDITION while pairing is still pending.

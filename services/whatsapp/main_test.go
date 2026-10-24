@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+	"go.mau.fi/whatsmeow/util/keys"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -45,7 +47,7 @@ func newTestServer() *server {
 
 // fakeClient returns an offline client; linked gives it a device ID like a paired session.
 func fakeClient(phone string, linked bool) *whatsmeow.Client {
-	dev := &store.Device{}
+	dev := &store.Device{NoiseKey: keys.NewKeyPair()}
 	if linked {
 		jid := types.NewJID(phone, types.DefaultUserServer)
 		dev.ID = &jid
@@ -459,8 +461,14 @@ func TestWatchPairing(t *testing.T) {
 		if err := <-ready; err != nil {
 			t.Fatalf("first code must signal ready, got %v", err)
 		}
+		select {
+		case err := <-ready:
+			t.Fatalf("ready must receive exactly one value, got another: %v", err)
+		default:
+		}
+		// The second rotation tried to refresh the code; offline, that fails and publishes nothing.
 		if ev := next(t, sub); ev.GetAccountEvent().GetState() != pb.AccountState_ACCOUNT_STATE_PAIR_FAILED {
-			t.Fatalf("want PAIR_FAILED, got %v", ev)
+			t.Fatalf("want PAIR_FAILED (and no PAIRING from a failed refresh), got %v", ev)
 		}
 		if _, _, err := s.lookup(testPhone); code(err) != codes.NotFound {
 			t.Fatal("failed pairing must forget the account")
@@ -488,6 +496,24 @@ func TestWatchPairing(t *testing.T) {
 			t.Fatalf("successful pairing must keep the account: %v", err)
 		}
 	})
+}
+
+// TestPairingError checks WhatsApp's rate limit is reported as RESOURCE_EXHAUSTED.
+func TestPairingError(t *testing.T) {
+	limited := []error{
+		whatsmeow.ErrIQRateOverLimit,
+		&whatsmeow.IQError{Code: 429, Text: "rate-overlimit"}, // what the server actually returns
+		fmt.Errorf("pair: %w", whatsmeow.ErrIQRateOverLimit),
+	}
+	for _, err := range limited {
+		got := pairingError(testPhone, err)
+		if code(got) != codes.ResourceExhausted || !strings.Contains(got.Error(), "rate-limiting") {
+			t.Errorf("pairingError(%v) = %v, want RESOURCE_EXHAUSTED", err, got)
+		}
+	}
+	if got := pairingError(testPhone, errors.New("socket closed")); code(got) != codes.Unavailable {
+		t.Errorf("other errors must be UNAVAILABLE, got %v", got)
+	}
 }
 
 // TestForgetOnlyOwnClient ensures a stale client cannot unregister its replacement.

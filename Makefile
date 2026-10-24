@@ -136,8 +136,12 @@ test-infra: check-docker deps ## Stack smoke test: every container healthy, gate
 	fi; \
 	printf "$(C_BLUE)$(C_BOLD)==>$(C_RESET) Checking whatsapp gateway (health + protocol)\n"; \
 	$(COMPOSE_TEST) exec -T whatsapp /whatsapp -healthcheck; \
-	$(COMPOSE_TEST) exec -T whatsapp /whatsapp -status || { \
-		printf "$(C_RED)✘ WhatsApp protocol check failed: run make update-whatsmeow$(C_RESET)\n"; exit 1; }; \
+	rc=0; $(COMPOSE_TEST) exec -T whatsapp /whatsapp -status || rc=$$?; \
+	if [ "$$rc" = 2 ]; then \
+		printf "$(C_YEL)! whatsmeow upstream is ahead of the pinned build (warning only)$(C_RESET)\n"; \
+	elif [ "$$rc" != 0 ]; then \
+		printf "$(C_RED)✘ WhatsApp rejected the client or the gateway failed: see above$(C_RESET)\n"; exit 1; \
+	fi; \
 	printf "$(C_GREEN)✔ Stack smoke test passed$(C_RESET)\n"
 
 test-clean: check-docker ## Force-remove leftovers of the test environments

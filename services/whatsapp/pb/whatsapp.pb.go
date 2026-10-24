@@ -151,7 +151,8 @@ func (x *LoginRequest) GetPhone() string {
 // LoginResponse carries the pairing code of a new link.
 type LoginResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Code to type on the phone, formatted "ABCD-EFGH"; empty if the account already existed.
+	// Code to type on the phone, formatted "ABCD-EFGH" (valid about a minute, refreshed on
+	// Subscribe); empty if the account already existed.
 	PairingCode string `protobuf:"bytes,1,opt,name=pairing_code,json=pairingCode,proto3" json:"pairing_code,omitempty"`
 	// Current state of the account.
 	State         AccountState `protobuf:"varint,2,opt,name=state,proto3,enum=kapa.whatsapp.v1.AccountState" json:"state,omitempty"`
@@ -934,7 +935,9 @@ type AccountEvent struct {
 	// New state.
 	State AccountState `protobuf:"varint,1,opt,name=state,proto3,enum=kapa.whatsapp.v1.AccountState" json:"state,omitempty"`
 	// Human-readable reason, if any.
-	Detail        string `protobuf:"bytes,2,opt,name=detail,proto3" json:"detail,omitempty"`
+	Detail string `protobuf:"bytes,2,opt,name=detail,proto3" json:"detail,omitempty"`
+	// On PAIRING events: a fresh pairing code that replaces the previous one.
+	PairingCode   string `protobuf:"bytes,3,opt,name=pairing_code,json=pairingCode,proto3" json:"pairing_code,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -979,6 +982,13 @@ func (x *AccountEvent) GetState() AccountState {
 func (x *AccountEvent) GetDetail() string {
 	if x != nil {
 		return x.Detail
+	}
+	return ""
+}
+
+func (x *AccountEvent) GetPairingCode() string {
+	if x != nil {
+		return x.PairingCode
 	}
 	return ""
 }
@@ -1198,10 +1208,11 @@ const file_kapa_whatsapp_v1_whatsapp_proto_rawDesc = "" +
 	"\x04text\x18\x06 \x01(\tH\x00R\x04text\x12/\n" +
 	"\x05image\x18\a \x01(\v2\x17.kapa.whatsapp.v1.MediaH\x00R\x05image\x12/\n" +
 	"\x05audio\x18\b \x01(\v2\x17.kapa.whatsapp.v1.MediaH\x00R\x05audioB\t\n" +
-	"\acontent\"\\\n" +
+	"\acontent\"\x7f\n" +
 	"\fAccountEvent\x124\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x1e.kapa.whatsapp.v1.AccountStateR\x05state\x12\x16\n" +
-	"\x06detail\x18\x02 \x01(\tR\x06detail\"\x0f\n" +
+	"\x06detail\x18\x02 \x01(\tR\x06detail\x12!\n" +
+	"\fpairing_code\x18\x03 \x01(\tR\vpairingCode\"\x0f\n" +
 	"\rStatusRequest\"\xaf\x01\n" +
 	"\x0eStatusResponse\x12+\n" +
 	"\x11whatsmeow_version\x18\x01 \x01(\tR\x10whatsmeowVersion\x12\x1d\n" +

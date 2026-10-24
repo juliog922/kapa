@@ -12,10 +12,14 @@ option go_package = "kapa/whatsapp/pb;pb";
 // and dashes are accepted on input and stripped.
 service WhatsAppService {
   // Login starts linking a phone number and returns the pairing code to type on
-  // the phone (WhatsApp > Linked devices > Link with phone number). The code is
-  // valid for about 160 seconds; the outcome arrives on Subscribe as an
-  // AccountEvent (CONNECTED or PAIR_FAILED). Calling Login for an account that
-  // already exists returns its state and no code.
+  // the phone (WhatsApp > Linked devices > Link with phone number). A code only
+  // lives about a minute: while pairing is pending, WhatsApp rotates the login
+  // session and a fresh code is published on Subscribe as an AccountEvent
+  // (PAIRING, pairing_code); always show the latest one. The outcome arrives as
+  // CONNECTED or PAIR_FAILED (after about 2.5 minutes without success). Calling
+  // Login for an account that already exists returns its state and no code.
+  // RESOURCE_EXHAUSTED means WhatsApp rate-limits code requests for that number:
+  // wait (usually hours) before retrying, every attempt can extend the block.
   rpc Login(LoginRequest) returns (LoginResponse);
   // Logout unlinks the account from WhatsApp and wipes its session.
   // Fails with FAILED_PRECONDITION while pairing is still pending.
@@ -65,7 +69,8 @@ message LoginRequest {
 
 // LoginResponse carries the pairing code of a new link.
 message LoginResponse {
-  // Code to type on the phone, formatted "ABCD-EFGH"; empty if the account already existed.
+  // Code to type on the phone, formatted "ABCD-EFGH" (valid about a minute, refreshed on
+  // Subscribe); empty if the account already existed.
   string pairing_code = 1;
   // Current state of the account.
   AccountState state = 2;
@@ -178,6 +183,8 @@ message AccountEvent {
   AccountState state = 1;
   // Human-readable reason, if any.
   string detail = 2;
+  // On PAIRING events: a fresh pairing code that replaces the previous one.
+  string pairing_code = 3;
 }
 
 // StatusRequest is empty.

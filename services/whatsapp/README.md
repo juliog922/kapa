@@ -9,7 +9,7 @@ Code: one hand-written file, `main.go`; `pb/` is generated (`make proto`).
 
 | RPC | Behaviour |
 |-----|-----------|
-| `Login(phone)` | Returns a pairing code (`ABCD-EFGH`, ~160 s) to type on the phone: *WhatsApp › Linked devices › Link a device › Link with phone number instead*. The result arrives on `Subscribe` (`CONNECTED` / `PAIR_FAILED`). For an existing account it returns its state and no code. |
+| `Login(phone)` | Returns a pairing code (`ABCD-EFGH`) to type on the phone: *WhatsApp › Linked devices › Link a device › Link with phone number instead*. A code lives about a minute; while pairing is pending, fresh codes arrive on `Subscribe` (`PAIRING` + `pairing_code`), show the latest. The result arrives as `CONNECTED` or `PAIR_FAILED` (~2.5 min without success). For an existing account it returns its state and no code. `RESOURCE_EXHAUSTED` means WhatsApp rate-limits code requests for that number: wait (usually hours), retrying extends the block. |
 | `Logout(phone)` | Unlinks the account from WhatsApp and wipes its session. `FAILED_PRECONDITION` while still pairing. |
 | `Delete(phone)` | Removes the account no matter what: tries to unlink, always wipes locally, cancels pending pairings. |
 | `Send(account, to, text \| image \| audio)` | Uploads media and sends. `voice_note=true` + `audio/ogg; codecs=opus` for voice notes. |
@@ -75,8 +75,8 @@ With `WA_TEST_PHONE` set, it also runs **live against WhatsApp with a single pho
    the sessions persist in the `kapa-wa-test-sessions` Docker volume (CI on this machine reuses them).
 2. Every `make test`: device A sends text, an image and a voice note to the phone's own
    "Message yourself" chat; WhatsApp fans it out to device B, which must receive the same
-   message ID and **byte-identical** decrypted media. A pairing code is also requested and
-   cancelled (the phone shows a notification; `WA_TEST_PAIRING=0` skips it).
+   message ID and **byte-identical** decrypted media. With `WA_TEST_PAIRING=1` a pairing code
+   is also requested and cancelled (off by default: WhatsApp rate-limits code requests per number).
 
 `make test-reset` forgets the test sessions (also remove the two *Kapa* entries from the
 phone's linked devices). Automated use of WhatsApp through unofficial clients can lead to bans;
@@ -86,10 +86,16 @@ the tests only message the test phone itself.
 
 WhatsApp changes its protocol from time to time; whatsmeow follows. Detection is layered:
 
+whatsmeow is **pinned** to a known-good commit (`go.mod`): upgrading blindly can break phone-code
+pairing, and every re-validation costs pairing-code quota. So drift is a warning and only a real
+break fails:
+
 | Where | Signal |
 |-------|--------|
-| Runtime | WhatsApp rejects the client (`405 client outdated`): `ClientOutdated` → health `NOT_SERVING` → container unhealthy, deploy fails, `make monitor` shows an issue. |
-| `make monitor` | `-status` compares the protocol version we announce with whatsmeow upstream main: **UPDATE AVAILABLE** warning. |
-| `make test` | `TestUpstreamProtocol` and the stack smoke test fail when upstream moved ahead. |
+| Runtime | WhatsApp rejects the client (`405 client outdated`): `ClientOutdated` → health `NOT_SERVING` → container unhealthy, deploy fails, `make monitor` shows an **issue**. |
+| `make monitor` | `-status` compares our protocol version with whatsmeow upstream main: **UPDATE AVAILABLE** warning. |
+| `make test` | the stack smoke test and `TestUpstreamProtocol` print the same **UPDATE AVAILABLE** warning; the live round trips fail if WhatsApp stops accepting the pinned build. |
 
-Fix: `make update-whatsmeow` → `make test` → commit `go.mod`/`go.sum` → PR → merge deploys it to prike.
+Upgrade deliberately: `make update-whatsmeow WHATSMEOW=<commit|main>` → `make test` → one pairing
+check (`WA_TEST_PAIRING=1 make test`) → commit `go.mod`/`go.sum` → PR → merge deploys it. Going back
+to an older commit may also need its matching `go.mau.fi/util` (see that commit's `go.mod`).

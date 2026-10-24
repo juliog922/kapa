@@ -83,12 +83,21 @@ test-unit: tools go.sum ## Unit tests: no database, no network
 
 test-integration: tools go.sum ## PostgreSQL + WhatsApp (live part needs WA_TEST_PHONE and make pair-test)
 	@$(MAKE) testdb
-	@rc=0; $(RUN_DB) go test -tags integration -race -count=1 -timeout 15m -v -run '$(INTEGRATION_TESTS)' ./... || rc=$$?; \
+	@rc=0; $(RUN_DB) go test -tags integration -race -count=1 -timeout 15m -v -run '$(INTEGRATION_TESTS)' . || rc=$$?; \
 	 $(MAKE) testdb-stop; exit $$rc
 
 pair-test: tools go.sum ## One-time: link the test phone twice (devices A and B) for the live tests
+	@phone="$${WA_TEST_PHONE:-$$(sed -n 's/^WA_TEST_PHONE=//p' .env.test 2>/dev/null)}"; \
+	 if [ -z "$$phone" ]; then \
+	   echo "WA_TEST_PHONE is not set: put your test number in services/whatsapp/.env.test"; \
+	   echo "  (cp .env.test.example .env.test, then WA_TEST_PHONE=+34600111222)"; exit 1; \
+	 fi; \
+	 echo "Pairing test devices for +$${phone#+}: keep WhatsApp open on that phone."
 	@$(MAKE) testdb
-	@rc=0; $(RUN_DB_IT) go test -tags integration -count=1 -timeout 10m -v -run '^TestPairTestDevices$$' ./... || rc=$$?; \
+	@printf '\033[34m\033[1m==>\033[0m Pairing the test phone as devices A and B.\n'
+	@printf '    Compiling, then a pairing code appears below for each device (lives ~1 min; fresh ones are printed).\n'
+	@printf '    On the phone: WhatsApp > Linked devices > Link a device > Link with phone number instead.\n\n'
+	@rc=0; $(RUN_DB_IT) go test -tags integration -count=1 -timeout 10m -v -run '^TestPairTestDevices$$' . || rc=$$?; \
 	 $(MAKE) testdb-stop; exit $$rc
 
 testdb:
@@ -115,10 +124,12 @@ bench: tools go.sum ## Benchmarks under perf (BENCH=regex BENCHTIME=1s) -> bench
 bench-baseline: ## Keep the last bench run as the baseline for future comparisons
 	@cp bench/latest.txt bench/baseline.txt && echo "bench/baseline.txt updated"
 
-update-whatsmeow: tools ## Upgrade whatsmeow to upstream main (protocol update), then unit-test it
-	$(RUN) sh -c 'go get go.mau.fi/whatsmeow@main && go mod tidy'
+update-whatsmeow: tools ## Move whatsmeow to WHATSMEOW=<commit|main> deliberately, then unit-test it
+	@test -n "$(WHATSMEOW)" || { echo "Usage: make update-whatsmeow WHATSMEOW=<commit|main>  (current: $$(grep 'go.mau.fi/whatsmeow ' go.mod))"; exit 1; }
+	$(RUN) sh -c 'go get go.mau.fi/whatsmeow@$(WHATSMEOW) && go mod tidy'
 	@$(MAKE) test-unit
-	@echo "whatsmeow updated. Run 'make test', commit go.mod + go.sum, open a PR: merging deploys it."
+	@echo "whatsmeow moved to $(WHATSMEOW). Validate before committing: make test (live), and one pairing"
+	@echo "check with WA_TEST_PAIRING=1 (costs one code). Then commit go.mod + go.sum and open a PR."
 
 build: ## Build the runtime image
 	docker build --target runtime -t kapa-$(SERVICE):local .

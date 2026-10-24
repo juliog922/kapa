@@ -25,7 +25,7 @@ import (
 
 	"kapa/whatsapp/pb"
 
-	_ "github.com/lib/pq" // PostgreSQL driver for the whatsmeow session store.
+	"github.com/lib/pq" // PostgreSQL driver for the whatsmeow session store.
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store"
@@ -44,6 +44,10 @@ import (
 // eventBuffer is the per-subscriber queue length. A subscriber that falls this far
 // behind is disconnected instead of stalling the events of every account.
 const eventBuffer = 256
+
+// pairDisplayName is how the linked device presents itself while pairing ("Browser (OS)",
+// validated by WhatsApp).
+const pairDisplayName = "Chrome (Linux)"
 
 // maxMsgSize bounds gRPC messages: WhatsApp media is at most 16 MiB plus framing.
 const maxMsgSize = 32 << 20
@@ -135,6 +139,7 @@ func run(addr string) error {
 
 // newServer opens (and migrates) the session store. An empty dsn uses the PG* environment variables.
 func newServer(ctx context.Context, dsn string, log waLog.Logger, selfChat bool) (*server, error) {
+	sqlstore.PostgresArrayWrapper = pq.Array // batched array queries instead of per-row fallbacks
 	db, err := sqlstore.New(ctx, "postgres", dsn, log.Sub("db"))
 	if err != nil {
 		return nil, fmt.Errorf("session store: %w", err)
@@ -472,9 +477,19 @@ func (s *server) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginResp
 	code, err := s.pair(ctx, phone, cli)
 	if err != nil {
 		s.forget(phone, cli)
-		return nil, status.Errorf(codes.Unavailable, "pairing %s: %v", phone, err)
+		return nil, pairingError(phone, err)
 	}
 	return &pb.LoginResponse{PairingCode: code, State: pb.AccountState_ACCOUNT_STATE_PAIRING}, nil
+}
+
+// pairingError maps a pairing failure to gRPC: WhatsApp's rate limit (429) becomes
+// RESOURCE_EXHAUSTED, because retrying while limited extends the block.
+func pairingError(phone string, err error) error {
+	if errors.Is(err, whatsmeow.ErrIQRateOverLimit) {
+		return status.Errorf(codes.ResourceExhausted,
+			"WhatsApp is rate-limiting pairing codes for %s: wait (usually hours) before calling Login again; every attempt can extend the block", phone)
+	}
+	return status.Errorf(codes.Unavailable, "pairing %s: %v", phone, err)
 }
 
 // pair connects the unpaired client and requests a phone pairing code.
@@ -496,31 +511,57 @@ func (s *server) pair(ctx context.Context, phone string, cli *whatsmeow.Client) 
 	if err != nil {
 		return "", err
 	}
-	return cli.PairPhone(ctx, phone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+	return cli.PairPhone(ctx, phone, true, whatsmeow.PairClientChrome, pairDisplayName)
 }
 
-// watchPairing drains the pairing channel: the first code means the socket is ready;
-// any failure forgets the account and is published as PAIR_FAILED.
+// watchPairing drains the pairing channel. The first rotation means the socket is ready
+// (Login then requests the first code); every later rotation invalidates the previous
+// pairing code, so a fresh one is requested and published, until WhatsApp rate-limits
+// the number. Any failure forgets the account and is published as PAIR_FAILED.
+// ready (buffered, capacity 1) gets exactly one value.
 func (s *server) watchPairing(phone string, cli *whatsmeow.Client, qr <-chan whatsmeow.QRChannelItem, ready chan<- error) {
+	first, refresh := true, true
 	for item := range qr {
-		switch item.Event {
-		case whatsmeow.QRChannelEventCode:
-			select {
-			case ready <- nil:
-			default:
-			}
-		case whatsmeow.QRChannelSuccess.Event:
+		switch {
+		case item.Event == whatsmeow.QRChannelEventCode && first:
+			first = false
+			ready <- nil
+		case item.Event == whatsmeow.QRChannelEventCode && refresh:
+			refresh = s.refreshCode(phone, cli)
+		case item.Event == whatsmeow.QRChannelEventCode:
+			// rate-limited: keep the current code, request nothing more
+		case item.Event == whatsmeow.QRChannelSuccess.Event:
 			return
 		default:
-			select {
-			case ready <- errors.New(item.Event):
-			default:
+			if first {
+				ready <- errors.New(item.Event)
 			}
 			s.forget(phone, cli)
 			s.notify(phone, pb.AccountState_ACCOUNT_STATE_PAIR_FAILED, item.Event)
 			return
 		}
 	}
+}
+
+// refreshCode requests a new pairing code (without another push notification) and
+// publishes it as a PAIRING event: a code only lives about a minute. It returns false
+// once WhatsApp rate-limits the number, so no further codes are requested.
+func (s *server) refreshCode(phone string, cli *whatsmeow.Client) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	code, err := cli.PairPhone(ctx, phone, false, whatsmeow.PairClientChrome, pairDisplayName)
+	if errors.Is(err, whatsmeow.ErrIQRateOverLimit) {
+		s.log.Warnf("WhatsApp rate-limits pairing codes for %s: no more fresh codes", phone)
+		s.notify(phone, pb.AccountState_ACCOUNT_STATE_PAIRING, "WhatsApp rate limit: no fresh codes, the current one may expire")
+		return false
+	}
+	if err != nil {
+		s.log.Warnf("refresh pairing code %s: %v", phone, err)
+		return true
+	}
+	ev := &pb.AccountEvent{State: pb.AccountState_ACCOUNT_STATE_PAIRING, PairingCode: code}
+	s.publish(phone, "", &pb.SubscribeResponse{Account: phone, Event: &pb.SubscribeResponse_AccountEvent{AccountEvent: ev}})
+	return true
 }
 
 // Logout unlinks a linked account from WhatsApp and wipes its session.
@@ -761,7 +802,8 @@ func statusReport(st *pb.StatusResponse, upstream string, upstreamErr error) (st
 	case upstreamErr != nil:
 		b.WriteString("upstream protocol check skipped: " + upstreamErr.Error() + "\n")
 	case newer(upstream, st.GetWaVersion()):
-		b.WriteString("UPDATE AVAILABLE: whatsmeow upstream speaks protocol " + upstream + " (deployed " + st.GetWaVersion() + "). Run `make update-whatsmeow`.\n")
+		b.WriteString("UPDATE AVAILABLE: whatsmeow upstream speaks protocol " + upstream + " (deployed " + st.GetWaVersion() +
+			"). The pinned build keeps working until WhatsApp rejects it; plan `make update-whatsmeow WHATSMEOW=<commit>`.\n")
 		code = 2
 	default:
 		b.WriteString("protocol up to date with whatsmeow upstream (" + upstream + ")\n")
