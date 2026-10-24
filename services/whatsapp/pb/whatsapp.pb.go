@@ -1189,8 +1189,10 @@ type StatusResponse struct {
 	MessagesSent uint64 `protobuf:"varint,9,opt,name=messages_sent,json=messagesSent,proto3" json:"messages_sent,omitempty"`
 	// Subscribers disconnected for falling behind.
 	SubscribersDropped uint64 `protobuf:"varint,10,opt,name=subscribers_dropped,json=subscribersDropped,proto3" json:"subscribers_dropped,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Messages dropped because their sender is not on the account's allowlist.
+	MessagesFiltered uint64 `protobuf:"varint,11,opt,name=messages_filtered,json=messagesFiltered,proto3" json:"messages_filtered,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *StatusResponse) Reset() {
@@ -1293,6 +1295,13 @@ func (x *StatusResponse) GetSubscribersDropped() uint64 {
 	return 0
 }
 
+func (x *StatusResponse) GetMessagesFiltered() uint64 {
+	if x != nil {
+		return x.MessagesFiltered
+	}
+	return 0
+}
+
 // Account is one known account.
 type Account struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1301,9 +1310,11 @@ type Account struct {
 	// Current state.
 	State AccountState `protobuf:"varint,2,opt,name=state,proto3,enum=kapa.whatsapp.v1.AccountState" json:"state,omitempty"`
 	// The account's own WhatsApp LID, once linked.
-	Lid           string `protobuf:"bytes,3,opt,name=lid,proto3" json:"lid,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Lid string `protobuf:"bytes,3,opt,name=lid,proto3" json:"lid,omitempty"`
+	// Number of senders on the account's allowlist (0 = nothing is published).
+	AllowedSenders uint32 `protobuf:"varint,4,opt,name=allowed_senders,json=allowedSenders,proto3" json:"allowed_senders,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *Account) Reset() {
@@ -1355,6 +1366,289 @@ func (x *Account) GetLid() string {
 		return x.Lid
 	}
 	return ""
+}
+
+func (x *Account) GetAllowedSenders() uint32 {
+	if x != nil {
+		return x.AllowedSenders
+	}
+	return 0
+}
+
+// AllowSenderRequest adds a sender to an account's allowlist.
+type AllowSenderRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Phone number of the account.
+	Account string `protobuf:"bytes,1,opt,name=account,proto3" json:"account,omitempty"`
+	// Phone number of the sender (or "lid:<id>" for senders whose phone is hidden).
+	Sender        string `protobuf:"bytes,2,opt,name=sender,proto3" json:"sender,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AllowSenderRequest) Reset() {
+	*x = AllowSenderRequest{}
+	mi := &file_kapa_whatsapp_v1_whatsapp_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AllowSenderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AllowSenderRequest) ProtoMessage() {}
+
+func (x *AllowSenderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_kapa_whatsapp_v1_whatsapp_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AllowSenderRequest.ProtoReflect.Descriptor instead.
+func (*AllowSenderRequest) Descriptor() ([]byte, []int) {
+	return file_kapa_whatsapp_v1_whatsapp_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *AllowSenderRequest) GetAccount() string {
+	if x != nil {
+		return x.Account
+	}
+	return ""
+}
+
+func (x *AllowSenderRequest) GetSender() string {
+	if x != nil {
+		return x.Sender
+	}
+	return ""
+}
+
+// AllowSenderResponse is empty on success.
+type AllowSenderResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AllowSenderResponse) Reset() {
+	*x = AllowSenderResponse{}
+	mi := &file_kapa_whatsapp_v1_whatsapp_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AllowSenderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AllowSenderResponse) ProtoMessage() {}
+
+func (x *AllowSenderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_kapa_whatsapp_v1_whatsapp_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AllowSenderResponse.ProtoReflect.Descriptor instead.
+func (*AllowSenderResponse) Descriptor() ([]byte, []int) {
+	return file_kapa_whatsapp_v1_whatsapp_proto_rawDescGZIP(), []int{17}
+}
+
+// RevokeSenderRequest removes a sender from an account's allowlist.
+type RevokeSenderRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Phone number of the account.
+	Account string `protobuf:"bytes,1,opt,name=account,proto3" json:"account,omitempty"`
+	// Phone number of the sender (or "lid:<id>").
+	Sender        string `protobuf:"bytes,2,opt,name=sender,proto3" json:"sender,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RevokeSenderRequest) Reset() {
+	*x = RevokeSenderRequest{}
+	mi := &file_kapa_whatsapp_v1_whatsapp_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevokeSenderRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevokeSenderRequest) ProtoMessage() {}
+
+func (x *RevokeSenderRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_kapa_whatsapp_v1_whatsapp_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevokeSenderRequest.ProtoReflect.Descriptor instead.
+func (*RevokeSenderRequest) Descriptor() ([]byte, []int) {
+	return file_kapa_whatsapp_v1_whatsapp_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *RevokeSenderRequest) GetAccount() string {
+	if x != nil {
+		return x.Account
+	}
+	return ""
+}
+
+func (x *RevokeSenderRequest) GetSender() string {
+	if x != nil {
+		return x.Sender
+	}
+	return ""
+}
+
+// RevokeSenderResponse is empty on success.
+type RevokeSenderResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RevokeSenderResponse) Reset() {
+	*x = RevokeSenderResponse{}
+	mi := &file_kapa_whatsapp_v1_whatsapp_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevokeSenderResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevokeSenderResponse) ProtoMessage() {}
+
+func (x *RevokeSenderResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_kapa_whatsapp_v1_whatsapp_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevokeSenderResponse.ProtoReflect.Descriptor instead.
+func (*RevokeSenderResponse) Descriptor() ([]byte, []int) {
+	return file_kapa_whatsapp_v1_whatsapp_proto_rawDescGZIP(), []int{19}
+}
+
+// ListAllowedSendersRequest selects the account.
+type ListAllowedSendersRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Phone number of the account.
+	Account       string `protobuf:"bytes,1,opt,name=account,proto3" json:"account,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAllowedSendersRequest) Reset() {
+	*x = ListAllowedSendersRequest{}
+	mi := &file_kapa_whatsapp_v1_whatsapp_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAllowedSendersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAllowedSendersRequest) ProtoMessage() {}
+
+func (x *ListAllowedSendersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_kapa_whatsapp_v1_whatsapp_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAllowedSendersRequest.ProtoReflect.Descriptor instead.
+func (*ListAllowedSendersRequest) Descriptor() ([]byte, []int) {
+	return file_kapa_whatsapp_v1_whatsapp_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *ListAllowedSendersRequest) GetAccount() string {
+	if x != nil {
+		return x.Account
+	}
+	return ""
+}
+
+// ListAllowedSendersResponse is the account's allowlist.
+type ListAllowedSendersResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Allowed senders, sorted.
+	Senders       []string `protobuf:"bytes,1,rep,name=senders,proto3" json:"senders,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAllowedSendersResponse) Reset() {
+	*x = ListAllowedSendersResponse{}
+	mi := &file_kapa_whatsapp_v1_whatsapp_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAllowedSendersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAllowedSendersResponse) ProtoMessage() {}
+
+func (x *ListAllowedSendersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_kapa_whatsapp_v1_whatsapp_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAllowedSendersResponse.ProtoReflect.Descriptor instead.
+func (*ListAllowedSendersResponse) Descriptor() ([]byte, []int) {
+	return file_kapa_whatsapp_v1_whatsapp_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *ListAllowedSendersResponse) GetSenders() []string {
+	if x != nil {
+		return x.Senders
+	}
+	return nil
 }
 
 var File_kapa_whatsapp_v1_whatsapp_proto protoreflect.FileDescriptor
@@ -1431,7 +1725,7 @@ const file_kapa_whatsapp_v1_whatsapp_proto_rawDesc = "" +
 	"\x05state\x18\x01 \x01(\x0e2\x1e.kapa.whatsapp.v1.AccountStateR\x05state\x12\x16\n" +
 	"\x06detail\x18\x02 \x01(\tR\x06detail\x12!\n" +
 	"\fpairing_code\x18\x03 \x01(\tR\vpairingCode\"\x0f\n" +
-	"\rStatusRequest\"\xbe\x03\n" +
+	"\rStatusRequest\"\xeb\x03\n" +
 	"\x0eStatusResponse\x12+\n" +
 	"\x11whatsmeow_version\x18\x01 \x01(\tR\x10whatsmeowVersion\x12\x1d\n" +
 	"\n" +
@@ -1445,11 +1739,25 @@ const file_kapa_whatsapp_v1_whatsapp_proto_rawDesc = "" +
 	"\x12messages_delivered\x18\b \x01(\x04R\x11messagesDelivered\x12#\n" +
 	"\rmessages_sent\x18\t \x01(\x04R\fmessagesSent\x12/\n" +
 	"\x13subscribers_dropped\x18\n" +
-	" \x01(\x04R\x12subscribersDropped\"g\n" +
+	" \x01(\x04R\x12subscribersDropped\x12+\n" +
+	"\x11messages_filtered\x18\v \x01(\x04R\x10messagesFiltered\"\x90\x01\n" +
 	"\aAccount\x12\x14\n" +
 	"\x05phone\x18\x01 \x01(\tR\x05phone\x124\n" +
 	"\x05state\x18\x02 \x01(\x0e2\x1e.kapa.whatsapp.v1.AccountStateR\x05state\x12\x10\n" +
-	"\x03lid\x18\x03 \x01(\tR\x03lid*\x93\x02\n" +
+	"\x03lid\x18\x03 \x01(\tR\x03lid\x12'\n" +
+	"\x0fallowed_senders\x18\x04 \x01(\rR\x0eallowedSenders\"F\n" +
+	"\x12AllowSenderRequest\x12\x18\n" +
+	"\aaccount\x18\x01 \x01(\tR\aaccount\x12\x16\n" +
+	"\x06sender\x18\x02 \x01(\tR\x06sender\"\x15\n" +
+	"\x13AllowSenderResponse\"G\n" +
+	"\x13RevokeSenderRequest\x12\x18\n" +
+	"\aaccount\x18\x01 \x01(\tR\aaccount\x12\x16\n" +
+	"\x06sender\x18\x02 \x01(\tR\x06sender\"\x16\n" +
+	"\x14RevokeSenderResponse\"5\n" +
+	"\x19ListAllowedSendersRequest\x12\x18\n" +
+	"\aaccount\x18\x01 \x01(\tR\aaccount\"6\n" +
+	"\x1aListAllowedSendersResponse\x12\x18\n" +
+	"\asenders\x18\x01 \x03(\tR\asenders*\x93\x02\n" +
 	"\fAccountState\x12\x1d\n" +
 	"\x19ACCOUNT_STATE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15ACCOUNT_STATE_PAIRING\x10\x01\x12\x1b\n" +
@@ -1459,14 +1767,17 @@ const file_kapa_whatsapp_v1_whatsapp_proto_rawDesc = "" +
 	"\x19ACCOUNT_STATE_PAIR_FAILED\x10\x05\x12\x19\n" +
 	"\x15ACCOUNT_STATE_DELETED\x10\x06\x12\x1a\n" +
 	"\x16ACCOUNT_STATE_OUTDATED\x10\a\x12\x18\n" +
-	"\x14ACCOUNT_STATE_BANNED\x10\b2\xe1\x03\n" +
+	"\x14ACCOUNT_STATE_BANNED\x10\b2\x8d\x06\n" +
 	"\x0fWhatsAppService\x12H\n" +
 	"\x05Login\x12\x1e.kapa.whatsapp.v1.LoginRequest\x1a\x1f.kapa.whatsapp.v1.LoginResponse\x12K\n" +
 	"\x06Logout\x12\x1f.kapa.whatsapp.v1.LogoutRequest\x1a .kapa.whatsapp.v1.LogoutResponse\x12K\n" +
 	"\x06Delete\x12\x1f.kapa.whatsapp.v1.DeleteRequest\x1a .kapa.whatsapp.v1.DeleteResponse\x12E\n" +
 	"\x04Send\x12\x1d.kapa.whatsapp.v1.SendRequest\x1a\x1e.kapa.whatsapp.v1.SendResponse\x12V\n" +
 	"\tSubscribe\x12\".kapa.whatsapp.v1.SubscribeRequest\x1a#.kapa.whatsapp.v1.SubscribeResponse0\x01\x12K\n" +
-	"\x06Status\x12\x1f.kapa.whatsapp.v1.StatusRequest\x1a .kapa.whatsapp.v1.StatusResponseB\x15Z\x13kapa/whatsapp/pb;pbb\x06proto3"
+	"\x06Status\x12\x1f.kapa.whatsapp.v1.StatusRequest\x1a .kapa.whatsapp.v1.StatusResponse\x12Z\n" +
+	"\vAllowSender\x12$.kapa.whatsapp.v1.AllowSenderRequest\x1a%.kapa.whatsapp.v1.AllowSenderResponse\x12]\n" +
+	"\fRevokeSender\x12%.kapa.whatsapp.v1.RevokeSenderRequest\x1a&.kapa.whatsapp.v1.RevokeSenderResponse\x12o\n" +
+	"\x12ListAllowedSenders\x12+.kapa.whatsapp.v1.ListAllowedSendersRequest\x1a,.kapa.whatsapp.v1.ListAllowedSendersResponseB\x15Z\x13kapa/whatsapp/pb;pbb\x06proto3"
 
 var (
 	file_kapa_whatsapp_v1_whatsapp_proto_rawDescOnce sync.Once
@@ -1481,41 +1792,47 @@ func file_kapa_whatsapp_v1_whatsapp_proto_rawDescGZIP() []byte {
 }
 
 var file_kapa_whatsapp_v1_whatsapp_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_kapa_whatsapp_v1_whatsapp_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_kapa_whatsapp_v1_whatsapp_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_kapa_whatsapp_v1_whatsapp_proto_goTypes = []any{
-	(AccountState)(0),             // 0: kapa.whatsapp.v1.AccountState
-	(*LoginRequest)(nil),          // 1: kapa.whatsapp.v1.LoginRequest
-	(*LoginResponse)(nil),         // 2: kapa.whatsapp.v1.LoginResponse
-	(*LogoutRequest)(nil),         // 3: kapa.whatsapp.v1.LogoutRequest
-	(*LogoutResponse)(nil),        // 4: kapa.whatsapp.v1.LogoutResponse
-	(*DeleteRequest)(nil),         // 5: kapa.whatsapp.v1.DeleteRequest
-	(*DeleteResponse)(nil),        // 6: kapa.whatsapp.v1.DeleteResponse
-	(*Media)(nil),                 // 7: kapa.whatsapp.v1.Media
-	(*SendRequest)(nil),           // 8: kapa.whatsapp.v1.SendRequest
-	(*SendResponse)(nil),          // 9: kapa.whatsapp.v1.SendResponse
-	(*SubscribeRequest)(nil),      // 10: kapa.whatsapp.v1.SubscribeRequest
-	(*SubscribeResponse)(nil),     // 11: kapa.whatsapp.v1.SubscribeResponse
-	(*Message)(nil),               // 12: kapa.whatsapp.v1.Message
-	(*AccountEvent)(nil),          // 13: kapa.whatsapp.v1.AccountEvent
-	(*StatusRequest)(nil),         // 14: kapa.whatsapp.v1.StatusRequest
-	(*StatusResponse)(nil),        // 15: kapa.whatsapp.v1.StatusResponse
-	(*Account)(nil),               // 16: kapa.whatsapp.v1.Account
-	(*timestamppb.Timestamp)(nil), // 17: google.protobuf.Timestamp
+	(AccountState)(0),                  // 0: kapa.whatsapp.v1.AccountState
+	(*LoginRequest)(nil),               // 1: kapa.whatsapp.v1.LoginRequest
+	(*LoginResponse)(nil),              // 2: kapa.whatsapp.v1.LoginResponse
+	(*LogoutRequest)(nil),              // 3: kapa.whatsapp.v1.LogoutRequest
+	(*LogoutResponse)(nil),             // 4: kapa.whatsapp.v1.LogoutResponse
+	(*DeleteRequest)(nil),              // 5: kapa.whatsapp.v1.DeleteRequest
+	(*DeleteResponse)(nil),             // 6: kapa.whatsapp.v1.DeleteResponse
+	(*Media)(nil),                      // 7: kapa.whatsapp.v1.Media
+	(*SendRequest)(nil),                // 8: kapa.whatsapp.v1.SendRequest
+	(*SendResponse)(nil),               // 9: kapa.whatsapp.v1.SendResponse
+	(*SubscribeRequest)(nil),           // 10: kapa.whatsapp.v1.SubscribeRequest
+	(*SubscribeResponse)(nil),          // 11: kapa.whatsapp.v1.SubscribeResponse
+	(*Message)(nil),                    // 12: kapa.whatsapp.v1.Message
+	(*AccountEvent)(nil),               // 13: kapa.whatsapp.v1.AccountEvent
+	(*StatusRequest)(nil),              // 14: kapa.whatsapp.v1.StatusRequest
+	(*StatusResponse)(nil),             // 15: kapa.whatsapp.v1.StatusResponse
+	(*Account)(nil),                    // 16: kapa.whatsapp.v1.Account
+	(*AllowSenderRequest)(nil),         // 17: kapa.whatsapp.v1.AllowSenderRequest
+	(*AllowSenderResponse)(nil),        // 18: kapa.whatsapp.v1.AllowSenderResponse
+	(*RevokeSenderRequest)(nil),        // 19: kapa.whatsapp.v1.RevokeSenderRequest
+	(*RevokeSenderResponse)(nil),       // 20: kapa.whatsapp.v1.RevokeSenderResponse
+	(*ListAllowedSendersRequest)(nil),  // 21: kapa.whatsapp.v1.ListAllowedSendersRequest
+	(*ListAllowedSendersResponse)(nil), // 22: kapa.whatsapp.v1.ListAllowedSendersResponse
+	(*timestamppb.Timestamp)(nil),      // 23: google.protobuf.Timestamp
 }
 var file_kapa_whatsapp_v1_whatsapp_proto_depIdxs = []int32{
 	0,  // 0: kapa.whatsapp.v1.LoginResponse.state:type_name -> kapa.whatsapp.v1.AccountState
 	7,  // 1: kapa.whatsapp.v1.SendRequest.image:type_name -> kapa.whatsapp.v1.Media
 	7,  // 2: kapa.whatsapp.v1.SendRequest.audio:type_name -> kapa.whatsapp.v1.Media
-	17, // 3: kapa.whatsapp.v1.SendResponse.sent_at:type_name -> google.protobuf.Timestamp
+	23, // 3: kapa.whatsapp.v1.SendResponse.sent_at:type_name -> google.protobuf.Timestamp
 	12, // 4: kapa.whatsapp.v1.SubscribeResponse.message:type_name -> kapa.whatsapp.v1.Message
 	13, // 5: kapa.whatsapp.v1.SubscribeResponse.account_event:type_name -> kapa.whatsapp.v1.AccountEvent
-	17, // 6: kapa.whatsapp.v1.Message.sent_at:type_name -> google.protobuf.Timestamp
+	23, // 6: kapa.whatsapp.v1.Message.sent_at:type_name -> google.protobuf.Timestamp
 	7,  // 7: kapa.whatsapp.v1.Message.image:type_name -> kapa.whatsapp.v1.Media
 	7,  // 8: kapa.whatsapp.v1.Message.audio:type_name -> kapa.whatsapp.v1.Media
-	17, // 9: kapa.whatsapp.v1.Message.received_at:type_name -> google.protobuf.Timestamp
+	23, // 9: kapa.whatsapp.v1.Message.received_at:type_name -> google.protobuf.Timestamp
 	0,  // 10: kapa.whatsapp.v1.AccountEvent.state:type_name -> kapa.whatsapp.v1.AccountState
 	16, // 11: kapa.whatsapp.v1.StatusResponse.accounts:type_name -> kapa.whatsapp.v1.Account
-	17, // 12: kapa.whatsapp.v1.StatusResponse.started_at:type_name -> google.protobuf.Timestamp
+	23, // 12: kapa.whatsapp.v1.StatusResponse.started_at:type_name -> google.protobuf.Timestamp
 	0,  // 13: kapa.whatsapp.v1.Account.state:type_name -> kapa.whatsapp.v1.AccountState
 	1,  // 14: kapa.whatsapp.v1.WhatsAppService.Login:input_type -> kapa.whatsapp.v1.LoginRequest
 	3,  // 15: kapa.whatsapp.v1.WhatsAppService.Logout:input_type -> kapa.whatsapp.v1.LogoutRequest
@@ -1523,14 +1840,20 @@ var file_kapa_whatsapp_v1_whatsapp_proto_depIdxs = []int32{
 	8,  // 17: kapa.whatsapp.v1.WhatsAppService.Send:input_type -> kapa.whatsapp.v1.SendRequest
 	10, // 18: kapa.whatsapp.v1.WhatsAppService.Subscribe:input_type -> kapa.whatsapp.v1.SubscribeRequest
 	14, // 19: kapa.whatsapp.v1.WhatsAppService.Status:input_type -> kapa.whatsapp.v1.StatusRequest
-	2,  // 20: kapa.whatsapp.v1.WhatsAppService.Login:output_type -> kapa.whatsapp.v1.LoginResponse
-	4,  // 21: kapa.whatsapp.v1.WhatsAppService.Logout:output_type -> kapa.whatsapp.v1.LogoutResponse
-	6,  // 22: kapa.whatsapp.v1.WhatsAppService.Delete:output_type -> kapa.whatsapp.v1.DeleteResponse
-	9,  // 23: kapa.whatsapp.v1.WhatsAppService.Send:output_type -> kapa.whatsapp.v1.SendResponse
-	11, // 24: kapa.whatsapp.v1.WhatsAppService.Subscribe:output_type -> kapa.whatsapp.v1.SubscribeResponse
-	15, // 25: kapa.whatsapp.v1.WhatsAppService.Status:output_type -> kapa.whatsapp.v1.StatusResponse
-	20, // [20:26] is the sub-list for method output_type
-	14, // [14:20] is the sub-list for method input_type
+	17, // 20: kapa.whatsapp.v1.WhatsAppService.AllowSender:input_type -> kapa.whatsapp.v1.AllowSenderRequest
+	19, // 21: kapa.whatsapp.v1.WhatsAppService.RevokeSender:input_type -> kapa.whatsapp.v1.RevokeSenderRequest
+	21, // 22: kapa.whatsapp.v1.WhatsAppService.ListAllowedSenders:input_type -> kapa.whatsapp.v1.ListAllowedSendersRequest
+	2,  // 23: kapa.whatsapp.v1.WhatsAppService.Login:output_type -> kapa.whatsapp.v1.LoginResponse
+	4,  // 24: kapa.whatsapp.v1.WhatsAppService.Logout:output_type -> kapa.whatsapp.v1.LogoutResponse
+	6,  // 25: kapa.whatsapp.v1.WhatsAppService.Delete:output_type -> kapa.whatsapp.v1.DeleteResponse
+	9,  // 26: kapa.whatsapp.v1.WhatsAppService.Send:output_type -> kapa.whatsapp.v1.SendResponse
+	11, // 27: kapa.whatsapp.v1.WhatsAppService.Subscribe:output_type -> kapa.whatsapp.v1.SubscribeResponse
+	15, // 28: kapa.whatsapp.v1.WhatsAppService.Status:output_type -> kapa.whatsapp.v1.StatusResponse
+	18, // 29: kapa.whatsapp.v1.WhatsAppService.AllowSender:output_type -> kapa.whatsapp.v1.AllowSenderResponse
+	20, // 30: kapa.whatsapp.v1.WhatsAppService.RevokeSender:output_type -> kapa.whatsapp.v1.RevokeSenderResponse
+	22, // 31: kapa.whatsapp.v1.WhatsAppService.ListAllowedSenders:output_type -> kapa.whatsapp.v1.ListAllowedSendersResponse
+	23, // [23:32] is the sub-list for method output_type
+	14, // [14:23] is the sub-list for method input_type
 	14, // [14:14] is the sub-list for extension type_name
 	14, // [14:14] is the sub-list for extension extendee
 	0,  // [0:14] is the sub-list for field type_name
@@ -1561,7 +1884,7 @@ func file_kapa_whatsapp_v1_whatsapp_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_kapa_whatsapp_v1_whatsapp_proto_rawDesc), len(file_kapa_whatsapp_v1_whatsapp_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   16,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

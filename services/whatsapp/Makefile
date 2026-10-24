@@ -25,7 +25,7 @@ TEST_DB   := kapa-wa-testdb
 TEST_VOL  := kapa-wa-test-sessions
 TEST_PG_DSN := host=$(TEST_DB) user=kapa_test password=kapa_test sslmode=disable
 ENV_TEST  := $(wildcard .env.test)
-INTEGRATION_TESTS := ^Test(StoreMigrations|DeleteWipes|UpstreamProtocol|Live)
+INTEGRATION_TESTS := ^Test(StoreMigrations|DeleteWipes|AllowlistPersistence|UpstreamProtocol|Live)
 
 DOCKER    := docker run --rm -v $(ROOT):/src -w /src/services/$(SERVICE)
 RUN       := $(DOCKER) $(TTY) -u $(UID):$(GID) -v kapa-go-cache-$(UID):/cache $(TOOLS_IMG)

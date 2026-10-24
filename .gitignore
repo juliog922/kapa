@@ -19,3 +19,7 @@ services/*/.env.test
 !services/*/.env.test.example
 services/*/bench/
 services/whatsapp/whatsapp
+
+# Service secrets (app passwords...): never committed; only *.example.env files are
+services/*/secrets/*
+!services/*/secrets/*.example.env

@@ -96,6 +96,7 @@ func BenchmarkOnMessage(b *testing.B) {
 	m := msgEvent("34699888777", &waE2E.Message{Conversation: proto.String("hola")})
 	b.Run("subs=10", func(b *testing.B) {
 		s := newTestServer()
+		s.remember(testPhone, "34699888777")
 		drained(b, s, 10)
 		b.ReportAllocs()
 		for b.Loop() {
@@ -104,6 +105,14 @@ func BenchmarkOnMessage(b *testing.B) {
 	})
 	b.Run("subs=0", func(b *testing.B) {
 		s := newTestServer()
+		s.remember(testPhone, "34699888777")
+		b.ReportAllocs()
+		for b.Loop() {
+			s.onMessage(testPhone, "", nil, m)
+		}
+	})
+	b.Run("filtered", func(b *testing.B) {
+		s := newTestServer() // empty allowlist: the sender is dropped at once
 		b.ReportAllocs()
 		for b.Loop() {
 			s.onMessage(testPhone, "", nil, m)

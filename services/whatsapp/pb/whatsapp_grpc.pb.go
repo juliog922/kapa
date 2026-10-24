@@ -23,12 +23,15 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WhatsAppService_Login_FullMethodName     = "/kapa.whatsapp.v1.WhatsAppService/Login"
-	WhatsAppService_Logout_FullMethodName    = "/kapa.whatsapp.v1.WhatsAppService/Logout"
-	WhatsAppService_Delete_FullMethodName    = "/kapa.whatsapp.v1.WhatsAppService/Delete"
-	WhatsAppService_Send_FullMethodName      = "/kapa.whatsapp.v1.WhatsAppService/Send"
-	WhatsAppService_Subscribe_FullMethodName = "/kapa.whatsapp.v1.WhatsAppService/Subscribe"
-	WhatsAppService_Status_FullMethodName    = "/kapa.whatsapp.v1.WhatsAppService/Status"
+	WhatsAppService_Login_FullMethodName              = "/kapa.whatsapp.v1.WhatsAppService/Login"
+	WhatsAppService_Logout_FullMethodName             = "/kapa.whatsapp.v1.WhatsAppService/Logout"
+	WhatsAppService_Delete_FullMethodName             = "/kapa.whatsapp.v1.WhatsAppService/Delete"
+	WhatsAppService_Send_FullMethodName               = "/kapa.whatsapp.v1.WhatsAppService/Send"
+	WhatsAppService_Subscribe_FullMethodName          = "/kapa.whatsapp.v1.WhatsAppService/Subscribe"
+	WhatsAppService_Status_FullMethodName             = "/kapa.whatsapp.v1.WhatsAppService/Status"
+	WhatsAppService_AllowSender_FullMethodName        = "/kapa.whatsapp.v1.WhatsAppService/AllowSender"
+	WhatsAppService_RevokeSender_FullMethodName       = "/kapa.whatsapp.v1.WhatsAppService/RevokeSender"
+	WhatsAppService_ListAllowedSenders_FullMethodName = "/kapa.whatsapp.v1.WhatsAppService/ListAllowedSenders"
 )
 
 // WhatsAppServiceClient is the client API for WhatsAppService service.
@@ -49,12 +52,12 @@ type WhatsAppServiceClient interface {
 	// RESOURCE_EXHAUSTED means WhatsApp rate-limits code requests for that number:
 	// wait (usually hours) before retrying, every attempt can extend the block.
 	Login(ctx context.Context, in *LoginRequest, opts ...grpc.CallOption) (*LoginResponse, error)
-	// Logout unlinks the account from WhatsApp and wipes its session.
+	// Logout unlinks the account from WhatsApp and wipes its session (the allowlist is kept).
 	// Fails with FAILED_PRECONDITION while pairing is still pending.
 	Logout(ctx context.Context, in *LogoutRequest, opts ...grpc.CallOption) (*LogoutResponse, error)
 	// Delete removes the account unconditionally: it tries to unlink it, and
 	// wipes the local session even if WhatsApp is unreachable or the session is
-	// already invalid. Also cancels a pending pairing.
+	// already invalid. Also cancels a pending pairing and deletes the account's allowlist.
 	Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
 	// Send delivers a text, image or audio message to a phone number.
 	Send(ctx context.Context, in *SendRequest, opts ...grpc.CallOption) (*SendResponse, error)
@@ -65,6 +68,14 @@ type WhatsAppServiceClient interface {
 	Subscribe(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SubscribeResponse], error)
 	// Status reports the accounts and the WhatsApp protocol versions in use.
 	Status(ctx context.Context, in *StatusRequest, opts ...grpc.CallOption) (*StatusResponse, error)
+	// AllowSender adds a sender to an account's allowlist. Messages are only published
+	// from allowed senders (deny by default); others are dropped and counted as filtered.
+	// Stored in PostgreSQL. Idempotent.
+	AllowSender(ctx context.Context, in *AllowSenderRequest, opts ...grpc.CallOption) (*AllowSenderResponse, error)
+	// RevokeSender removes a sender from an account's allowlist. Idempotent.
+	RevokeSender(ctx context.Context, in *RevokeSenderRequest, opts ...grpc.CallOption) (*RevokeSenderResponse, error)
+	// ListAllowedSenders returns an account's allowlist, sorted.
+	ListAllowedSenders(ctx context.Context, in *ListAllowedSendersRequest, opts ...grpc.CallOption) (*ListAllowedSendersResponse, error)
 }
 
 type whatsAppServiceClient struct {
@@ -144,6 +155,36 @@ func (c *whatsAppServiceClient) Status(ctx context.Context, in *StatusRequest, o
 	return out, nil
 }
 
+func (c *whatsAppServiceClient) AllowSender(ctx context.Context, in *AllowSenderRequest, opts ...grpc.CallOption) (*AllowSenderResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AllowSenderResponse)
+	err := c.cc.Invoke(ctx, WhatsAppService_AllowSender_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *whatsAppServiceClient) RevokeSender(ctx context.Context, in *RevokeSenderRequest, opts ...grpc.CallOption) (*RevokeSenderResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RevokeSenderResponse)
+	err := c.cc.Invoke(ctx, WhatsAppService_RevokeSender_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *whatsAppServiceClient) ListAllowedSenders(ctx context.Context, in *ListAllowedSendersRequest, opts ...grpc.CallOption) (*ListAllowedSendersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAllowedSendersResponse)
+	err := c.cc.Invoke(ctx, WhatsAppService_ListAllowedSenders_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WhatsAppServiceServer is the server API for WhatsAppService service.
 // All implementations must embed UnimplementedWhatsAppServiceServer
 // for forward compatibility.
@@ -162,12 +203,12 @@ type WhatsAppServiceServer interface {
 	// RESOURCE_EXHAUSTED means WhatsApp rate-limits code requests for that number:
 	// wait (usually hours) before retrying, every attempt can extend the block.
 	Login(context.Context, *LoginRequest) (*LoginResponse, error)
-	// Logout unlinks the account from WhatsApp and wipes its session.
+	// Logout unlinks the account from WhatsApp and wipes its session (the allowlist is kept).
 	// Fails with FAILED_PRECONDITION while pairing is still pending.
 	Logout(context.Context, *LogoutRequest) (*LogoutResponse, error)
 	// Delete removes the account unconditionally: it tries to unlink it, and
 	// wipes the local session even if WhatsApp is unreachable or the session is
-	// already invalid. Also cancels a pending pairing.
+	// already invalid. Also cancels a pending pairing and deletes the account's allowlist.
 	Delete(context.Context, *DeleteRequest) (*DeleteResponse, error)
 	// Send delivers a text, image or audio message to a phone number.
 	Send(context.Context, *SendRequest) (*SendResponse, error)
@@ -178,6 +219,14 @@ type WhatsAppServiceServer interface {
 	Subscribe(*SubscribeRequest, grpc.ServerStreamingServer[SubscribeResponse]) error
 	// Status reports the accounts and the WhatsApp protocol versions in use.
 	Status(context.Context, *StatusRequest) (*StatusResponse, error)
+	// AllowSender adds a sender to an account's allowlist. Messages are only published
+	// from allowed senders (deny by default); others are dropped and counted as filtered.
+	// Stored in PostgreSQL. Idempotent.
+	AllowSender(context.Context, *AllowSenderRequest) (*AllowSenderResponse, error)
+	// RevokeSender removes a sender from an account's allowlist. Idempotent.
+	RevokeSender(context.Context, *RevokeSenderRequest) (*RevokeSenderResponse, error)
+	// ListAllowedSenders returns an account's allowlist, sorted.
+	ListAllowedSenders(context.Context, *ListAllowedSendersRequest) (*ListAllowedSendersResponse, error)
 	mustEmbedUnimplementedWhatsAppServiceServer()
 }
 
@@ -205,6 +254,15 @@ func (UnimplementedWhatsAppServiceServer) Subscribe(*SubscribeRequest, grpc.Serv
 }
 func (UnimplementedWhatsAppServiceServer) Status(context.Context, *StatusRequest) (*StatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Status not implemented")
+}
+func (UnimplementedWhatsAppServiceServer) AllowSender(context.Context, *AllowSenderRequest) (*AllowSenderResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AllowSender not implemented")
+}
+func (UnimplementedWhatsAppServiceServer) RevokeSender(context.Context, *RevokeSenderRequest) (*RevokeSenderResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RevokeSender not implemented")
+}
+func (UnimplementedWhatsAppServiceServer) ListAllowedSenders(context.Context, *ListAllowedSendersRequest) (*ListAllowedSendersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListAllowedSenders not implemented")
 }
 func (UnimplementedWhatsAppServiceServer) mustEmbedUnimplementedWhatsAppServiceServer() {}
 func (UnimplementedWhatsAppServiceServer) testEmbeddedByValue()                         {}
@@ -328,6 +386,60 @@ func _WhatsAppService_Status_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WhatsAppService_AllowSender_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AllowSenderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WhatsAppServiceServer).AllowSender(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WhatsAppService_AllowSender_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WhatsAppServiceServer).AllowSender(ctx, req.(*AllowSenderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WhatsAppService_RevokeSender_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RevokeSenderRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WhatsAppServiceServer).RevokeSender(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WhatsAppService_RevokeSender_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WhatsAppServiceServer).RevokeSender(ctx, req.(*RevokeSenderRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WhatsAppService_ListAllowedSenders_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAllowedSendersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WhatsAppServiceServer).ListAllowedSenders(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WhatsAppService_ListAllowedSenders_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WhatsAppServiceServer).ListAllowedSenders(ctx, req.(*ListAllowedSendersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WhatsAppService_ServiceDesc is the grpc.ServiceDesc for WhatsAppService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -354,6 +466,18 @@ var WhatsAppService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Status",
 			Handler:    _WhatsAppService_Status_Handler,
+		},
+		{
+			MethodName: "AllowSender",
+			Handler:    _WhatsAppService_AllowSender_Handler,
+		},
+		{
+			MethodName: "RevokeSender",
+			Handler:    _WhatsAppService_RevokeSender_Handler,
+		},
+		{
+			MethodName: "ListAllowedSenders",
+			Handler:    _WhatsAppService_ListAllowedSenders_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
