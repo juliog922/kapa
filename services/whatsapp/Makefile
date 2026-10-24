@@ -36,7 +36,7 @@ RUN_DB_IT := $(DOCKER) -it -u $(UID):$(GID) -v kapa-go-cache-$(UID):/cache $(TES
 # perf needs root + privileges; it gets its own cache volume so root never owns the shared one.
 RUN_PERF  := $(DOCKER) $(TTY) --privileged -u 0 -v kapa-go-cache-perf:/cache -e BENCH -e BENCHTIME $(TOOLS_IMG)
 
-.PHONY: help tools deps proto format lint check-docs test test-unit test-integration \
+.PHONY: help tools ready deps proto format lint check-docs test test-unit test-integration \
         testdb testdb-stop test-reset pair-test bench bench-baseline update-whatsmeow build clean
 
 help: ## Show this help
@@ -54,6 +54,8 @@ tools: ## Build the tools image (first build takes a few minutes; cached afterwa
 go.sum:
 	@$(MAKE) tools
 	$(RUN) go mod tidy
+
+ready: go.sum ## Dependencies resolved (creates go.sum only when missing)
 
 deps: tools ## Resolve dependencies (go mod tidy); commit go.mod and go.sum
 	$(RUN) go mod tidy

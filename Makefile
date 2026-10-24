@@ -13,7 +13,7 @@ MAKEFLAGS     += --no-print-directory
 # -----------------------------------------------------------------------------
 PROJECT           := kapa
 # Services with their own Makefile (format/lint/check-docs/test/bench/deps are delegated).
-SERVICES          := whatsapp
+SERVICES          := whatsapp core
 TEST_PROJECT      ?= $(PROJECT)-test
 COMPOSE_FILE      := docker-compose.yml
 COMPOSE_TEST_FILE := docker-compose.test.yml
@@ -115,8 +115,8 @@ test: test-infra ## Full test: stack smoke test + unit and integration tests of 
 bench: ## Benchmarks of every service under perf (BENCH=regex BENCHTIME=1s)
 	@for svc in $(SERVICES); do $(MAKE) -C services/$$svc bench; done
 
-deps: ## Make sure every service has resolved dependencies (go.sum)
-	@for svc in $(SERVICES); do $(MAKE) -C services/$$svc go.sum; done
+deps: ## Make sure every service has resolved dependencies (go.sum, Cargo.lock...)
+	@for svc in $(SERVICES); do $(MAKE) -C services/$$svc ready; done
 
 update-whatsmeow: ## WhatsApp protocol changed? Upgrade whatsmeow and test it
 	@$(MAKE) -C services/whatsapp update-whatsmeow
