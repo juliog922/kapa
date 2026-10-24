@@ -4,7 +4,7 @@ go 1.27
 
 require (
 	github.com/lib/pq v1.12.3
-	go.mau.fi/whatsmeow v0.0.0-20261017175727-b2b1e71d45e2
+	go.mau.fi/whatsmeow v0.0.0-20260630180629-b572e5bcb92b
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.12
 )
@@ -21,7 +21,7 @@ require (
 	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/vektah/gqlparser/v2 v2.5.27 // indirect
 	go.mau.fi/libsignal v0.2.2 // indirect
-	go.mau.fi/util v0.11.0 // indirect
+	go.mau.fi/util v0.9.10 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e // indirect
 	golang.org/x/net v0.61.0 // indirect
