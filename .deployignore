@@ -8,3 +8,11 @@
 /docs/
 /.editorconfig
 /.deployignore
+.env.test
+.env.test.example
+/services/*/bench/
+/services/*/*_test.go
+/services/*/scripts/
+/services/*/.golangci.yml
+/proto/
+/scripts/ci/

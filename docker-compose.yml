@@ -32,6 +32,41 @@ services:
     networks:
       - kapa
 
+  # WhatsApp gateway (gRPC :50051). Other services reach it at whatsapp:50051.
+  # Sessions are stored in the shared database (tables prefixed whatsmeow_).
+  whatsapp:
+    build:
+      context: ./services/whatsapp
+      target: runtime
+    image: kapa-whatsapp:${KAPA_ENV:-local}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      PGSSLMODE: disable
+      GRPC_ADDR: ":50051"
+      WA_LOG_LEVEL: ${WA_LOG_LEVEL:-WARN}
+      WA_SELF_CHAT: ${WA_SELF_CHAT:-0}
+    ports:
+      - "127.0.0.1:${WHATSAPP_GRPC_PORT:-50051}:50051"
+    labels:
+      # make monitor runs this inside the container: accounts + protocol drift check
+      kapa.status: "/whatsapp -status"
+    healthcheck:
+      test: ["CMD", "/whatsapp", "-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - kapa
+
   # Web log viewer: live tail, search, filter and per-service views.
   # Bound to localhost; reach it from your machine with `make deploy-logs-ui`.
   dozzle:

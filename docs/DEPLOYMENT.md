@@ -55,29 +55,41 @@ make monitor
 
 ## 2 · Self-hosted runner on OMEN16 (once)
 
-The runner refuses to run as root, so use a dedicated user:
+The runner is **not** a permanent service: start it when you need CI/CD and it stops itself
+after `RUNNER_IDLE` minutes (default 30) without jobs. It makes outbound HTTPS connections
+only; no port is opened on OMEN16.
+
+The runner refuses to run as root, so it gets a dedicated user:
 
 ```bash
-sudo useradd -m -s /bin/bash github-runner
-sudo usermod -aG docker github-runner
-sudo apt install -y make rsync openssh-client
+useradd -m -s /bin/bash github-runner
+usermod -aG docker github-runner
+apt install -y make rsync openssh-client git curl
 ```
 
-In GitHub: **Settings → Actions → Runners → New self-hosted runner → Linux x64** and run the
-download commands it shows as `github-runner` (`sudo -iu github-runner`). When configuring,
-add the `kapa` label:
+In GitHub: **Settings → Actions → Runners → New self-hosted runner → Linux x64**. As `github-runner`
+(`sudo -iu github-runner`), create `~/actions-runner`, run the download commands from that page, then:
 
 ```bash
 ./config.sh --url https://github.com/<owner>/kapa --token <TOKEN> \
             --name omen16 --labels kapa --unattended
-sudo ./svc.sh install github-runner
-sudo ./svc.sh start
 ```
+
+Do **not** run `svc.sh install`. If you already did: `cd /home/github-runner/actions-runner && sudo ./svc.sh stop && sudo ./svc.sh uninstall`.
+
+| Command               | Description                                                     |
+|-----------------------|-----------------------------------------------------------------|
+| `make runner-start`   | Start in background; auto-stops after 30 min idle (`RUNNER_IDLE=60`, `0` = never) |
+| `make runner-stop`    | Stop now (asks first if a job is running; `FORCE=1` skips)      |
+| `make runner-status`  | Online / busy / idle and recent log lines                       |
+| `make runner-logs`    | Follow the runner log                                           |
+| `make runner`         | Foreground mode until Ctrl+C                                    |
+
+Jobs created while the runner is offline stay **Queued** on GitHub and run as soon as it starts
+(GitHub cancels a job that waits more than 24 h).
 
 > ⚠ **Keep the repository private.** On a public repo anyone could open a PR that runs
 > code on OMEN16. The CI job also refuses PRs from forks as a second safety net.
-
-The runner must be online for PRs to be checked and merges to be deployed; jobs queue while it is off.
 
 ## 3 · Deploy key and GitHub environment (once)
 
@@ -102,6 +114,12 @@ In GitHub: **Settings → Environments → New environment → `production`**, t
 
 Delete the local private key copy afterwards if you don't need it.
 
+**Optional — live WhatsApp tests in CI:** add a *repository* secret (Settings → Secrets and
+variables → Actions → **Repository secrets**) `WA_TEST_PHONE` with the test phone number, and run
+`make pair-test` once on OMEN16. CI reuses the paired sessions stored in the local
+`kapa-wa-test-sessions` Docker volume. Set the repository variable `WA_TEST_PAIRING=0` to stop
+the pairing-handshake test (it shows a notification on the phone at every run).
+
 ## 4 · Protect `main` (once)
 
 Apply the ruleset in `.github/rulesets/main.json` (blocks direct pushes, force-pushes and deletion;
@@ -117,12 +135,14 @@ require GitHub Pro / Team for personal accounts.
 ## 5 · Daily workflow
 
 ```bash
+make runner-start                            # bring CI/CD online
 git switch dev
 # ... work, commit ...
 git push
 gh pr create --base main --head dev --fill   # CI runs `make test`
 gh pr merge --merge                          # allowed only when "CI result" is green
 # merge to main → CD deploys to prike and runs `make monitor`
+make runner-stop                             # or let it auto-stop when idle
 ```
 
 ## Operating production

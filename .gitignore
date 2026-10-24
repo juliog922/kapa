@@ -13,3 +13,9 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Services
+services/*/.env.test
+!services/*/.env.test.example
+services/*/bench/
+services/whatsapp/whatsapp

@@ -1,0 +1,257 @@
+syntax = "proto3";
+
+// Package kapa.whatsapp.v1 is the contract of the WhatsApp gateway: it links
+// WhatsApp accounts (one per phone number) and exposes their one-to-one
+// conversations to the rest of the platform.
+package kapa.whatsapp.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "kapa/whatsapp/pb;pb";
+
+// WhatsAppService links accounts, sends messages and streams incoming events.
+// Phone numbers are international, digits only ("34600111222"); "+", spaces
+// and dashes are accepted on input and stripped.
+service WhatsAppService {
+  // Login starts linking a phone number and returns the pairing code to type on
+  // the phone (WhatsApp > Linked devices > Link with phone number). A code only
+  // lives about a minute: while pairing is pending, WhatsApp rotates the login
+  // session and a fresh code is published on Subscribe as an AccountEvent
+  // (PAIRING, pairing_code); always show the latest one. The outcome arrives as
+  // CONNECTED or PAIR_FAILED (after about 2.5 minutes without success). Calling
+  // Login for an account that already exists returns its state and no code.
+  // RESOURCE_EXHAUSTED means WhatsApp rate-limits code requests for that number:
+  // wait (usually hours) before retrying, every attempt can extend the block.
+  rpc Login(LoginRequest) returns (LoginResponse);
+  // Logout unlinks the account from WhatsApp and wipes its session.
+  // Fails with FAILED_PRECONDITION while pairing is still pending.
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  // Delete removes the account unconditionally: it tries to unlink it, and
+  // wipes the local session even if WhatsApp is unreachable or the session is
+  // already invalid. Also cancels a pending pairing.
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  // Send delivers a text, image or audio message to a phone number.
+  rpc Send(SendRequest) returns (SendResponse);
+  // Subscribe streams events of the selected accounts. Only one-to-one
+  // messages are delivered: groups, broadcasts, status updates and channels
+  // are discarded. A subscriber that falls behind is disconnected with
+  // RESOURCE_EXHAUSTED and must resubscribe.
+  rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);
+  // Status reports the accounts and the WhatsApp protocol versions in use.
+  rpc Status(StatusRequest) returns (StatusResponse);
+}
+
+// AccountState is the lifecycle state of a linked account.
+enum AccountState {
+  // ACCOUNT_STATE_UNSPECIFIED is never sent.
+  ACCOUNT_STATE_UNSPECIFIED = 0;
+  // ACCOUNT_STATE_PAIRING means a pairing code was issued and not used yet.
+  ACCOUNT_STATE_PAIRING = 1;
+  // ACCOUNT_STATE_CONNECTED means the account is linked and online.
+  ACCOUNT_STATE_CONNECTED = 2;
+  // ACCOUNT_STATE_DISCONNECTED means the account is linked but offline; it reconnects automatically.
+  ACCOUNT_STATE_DISCONNECTED = 3;
+  // ACCOUNT_STATE_LOGGED_OUT means the account was unlinked (by Logout, from the phone or by WhatsApp).
+  ACCOUNT_STATE_LOGGED_OUT = 4;
+  // ACCOUNT_STATE_PAIR_FAILED means the pairing code expired or was rejected.
+  ACCOUNT_STATE_PAIR_FAILED = 5;
+  // ACCOUNT_STATE_DELETED means the account was removed with Delete.
+  ACCOUNT_STATE_DELETED = 6;
+  // ACCOUNT_STATE_OUTDATED means WhatsApp rejected the client version: whatsmeow must be updated.
+  ACCOUNT_STATE_OUTDATED = 7;
+  // ACCOUNT_STATE_BANNED means WhatsApp temporarily banned the account.
+  ACCOUNT_STATE_BANNED = 8;
+}
+
+// LoginRequest selects the phone number to link.
+message LoginRequest {
+  // Phone number of the account to link.
+  string phone = 1;
+}
+
+// LoginResponse carries the pairing code of a new link.
+message LoginResponse {
+  // Code to type on the phone, formatted "ABCD-EFGH" (valid about a minute, refreshed on
+  // Subscribe); empty if the account already existed.
+  string pairing_code = 1;
+  // Current state of the account.
+  AccountState state = 2;
+}
+
+// LogoutRequest selects the account to unlink.
+message LogoutRequest {
+  // Phone number of the account.
+  string phone = 1;
+}
+
+// LogoutResponse is empty on success.
+message LogoutResponse {}
+
+// DeleteRequest selects the account to remove.
+message DeleteRequest {
+  // Phone number of the account.
+  string phone = 1;
+}
+
+// DeleteResponse is empty on success.
+message DeleteResponse {}
+
+// Media is the payload of an image or audio message.
+message Media {
+  // Raw (decrypted) file bytes.
+  bytes data = 1;
+  // MIME type, e.g. "image/jpeg" or "audio/ogg; codecs=opus". Required when sending.
+  string mime_type = 2;
+  // Caption shown under an image. Ignored for audio.
+  string caption = 3;
+  // True for a push-to-talk voice note (should be "audio/ogg; codecs=opus"). Ignored for images.
+  bool voice_note = 4;
+  // Audio duration in seconds, if known. Ignored for images.
+  uint32 seconds = 5;
+  // Size of data in bytes, as announced by the sender. Received messages only.
+  uint64 file_length = 6;
+  // SHA-256 of data, as announced by the sender (verified on download). Received messages only.
+  bytes file_sha256 = 7;
+  // Image width in pixels (0 if unknown). Computed when sending JPEG/PNG images.
+  uint32 width = 8;
+  // Image height in pixels (0 if unknown). Computed when sending JPEG/PNG images.
+  uint32 height = 9;
+}
+
+// SendRequest describes a message to send.
+message SendRequest {
+  // Phone number of the sending account.
+  string account = 1;
+  // Phone number of the recipient.
+  string to = 2;
+  // Message content; exactly one is required.
+  oneof content {
+    // Plain text.
+    string text = 3;
+    // An image with optional caption.
+    Media image = 4;
+    // An audio file or voice note.
+    Media audio = 5;
+  }
+}
+
+// SendResponse identifies the sent message.
+message SendResponse {
+  // WhatsApp message ID.
+  string id = 1;
+  // When WhatsApp accepted the message (server time).
+  google.protobuf.Timestamp sent_at = 2;
+  // Phone number of the sending account.
+  string from = 3;
+  // Phone number of the recipient.
+  string to = 4;
+}
+
+// SubscribeRequest selects which events to receive. Empty lists match everything.
+message SubscribeRequest {
+  // Phone numbers of the accounts to follow.
+  repeated string accounts = 1;
+  // Phone numbers of the contacts to receive messages from. Account events are never filtered by peer.
+  repeated string peers = 2;
+}
+
+// SubscribeResponse is one event of one account.
+message SubscribeResponse {
+  // Phone number of the account the event belongs to.
+  string account = 1;
+  // The event.
+  oneof event {
+    // An incoming one-to-one message.
+    Message message = 2;
+    // A change in the account lifecycle.
+    AccountEvent account_event = 3;
+  }
+}
+
+// Message is an incoming one-to-one message with everything needed to process it later.
+message Message {
+  // WhatsApp message ID (unique per chat; the same ID is reported by the sender's SendResponse).
+  string id = 1;
+  // Sender phone number, or "lid:<id>" when WhatsApp hides it and it cannot be resolved.
+  string from = 2;
+  // Sender display name, if known.
+  string push_name = 3;
+  // When the sender sent the message (WhatsApp server time, second precision).
+  google.protobuf.Timestamp sent_at = 4;
+  // True only for "message yourself" chat messages, delivered when WA_SELF_CHAT=1.
+  bool from_me = 5;
+  // Message content.
+  oneof content {
+    // Plain text.
+    string text = 6;
+    // An image, downloaded and decrypted.
+    Media image = 7;
+    // An audio file or voice note, downloaded and decrypted.
+    Media audio = 8;
+  }
+  // Receiver phone number: the linked account that received the message.
+  string to = 9;
+  // Sender's WhatsApp LID (privacy identifier), if known; stable even when the phone is hidden.
+  string from_lid = 10;
+  // Chat address as WhatsApp reports it, e.g. "34600111222@s.whatsapp.net" or "123@lid".
+  string chat = 11;
+  // When this gateway received and decrypted the message.
+  google.protobuf.Timestamp received_at = 12;
+  // ID of the message this one replies to (quotes), if any.
+  string reply_to_id = 13;
+  // True if the message was forwarded.
+  bool forwarded = 14;
+  // True if sent in a chat with disappearing messages.
+  bool ephemeral = 15;
+  // True if sent as "view once".
+  bool view_once = 16;
+  // True if this is an edit of a previously sent message.
+  bool edited = 17;
+}
+
+// AccountEvent reports a lifecycle change of an account.
+message AccountEvent {
+  // New state.
+  AccountState state = 1;
+  // Human-readable reason, if any.
+  string detail = 2;
+  // On PAIRING events: a fresh pairing code that replaces the previous one.
+  string pairing_code = 3;
+}
+
+// StatusRequest is empty.
+message StatusRequest {}
+
+// StatusResponse describes the gateway and its traffic since it started.
+message StatusResponse {
+  // Version of the whatsmeow library compiled in.
+  string whatsmeow_version = 1;
+  // WhatsApp Web protocol version the client announces.
+  string wa_version = 2;
+  // True once WhatsApp has rejected the client as outdated.
+  bool outdated = 3;
+  // All known accounts, sorted by phone number.
+  repeated Account accounts = 4;
+  // When the gateway process started.
+  google.protobuf.Timestamp started_at = 5;
+  // Number of open Subscribe streams.
+  uint32 subscribers = 6;
+  // One-to-one messages received from WhatsApp (any type; groups, status updates and channels excluded).
+  uint64 messages_received = 7;
+  // Message events handed to subscribers (one per subscriber and message).
+  uint64 messages_delivered = 8;
+  // Messages sent with Send.
+  uint64 messages_sent = 9;
+  // Subscribers disconnected for falling behind.
+  uint64 subscribers_dropped = 10;
+}
+
+// Account is one known account.
+message Account {
+  // Phone number.
+  string phone = 1;
+  // Current state.
+  AccountState state = 2;
+  // The account's own WhatsApp LID, once linked.
+  string lid = 3;
+}
