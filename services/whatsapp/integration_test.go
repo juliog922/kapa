@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -22,6 +23,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -326,8 +328,9 @@ func TestLive(t *testing.T) {
 		data, caption := testJPEG(t), "kapa image "+nonce(t)
 		got := roundTrip(t, sb, a, b, phone, &pb.SendRequest{Content: &pb.SendRequest_Image{Image: &pb.Media{Data: data, MimeType: "image/jpeg", Caption: caption}}})
 		img := got.GetImage()
-		if !bytes.Equal(img.GetData(), data) || img.GetCaption() != caption || img.GetMimeType() != "image/jpeg" {
-			t.Fatalf("image mismatch: %d bytes (want %d), caption %q, mime %q", len(img.GetData()), len(data), img.GetCaption(), img.GetMimeType())
+		assertMedia(t, img, data, "image/jpeg")
+		if img.GetCaption() != caption || img.GetWidth() != 64 || img.GetHeight() != 64 {
+			t.Fatalf("image details: caption %q, size %dx%d (want 64x64)", img.GetCaption(), img.GetWidth(), img.GetHeight())
 		}
 	})
 	t.Run("voice note", func(t *testing.T) {
@@ -335,8 +338,22 @@ func TestLive(t *testing.T) {
 		_, _ = rand.Read(data)
 		got := roundTrip(t, sb, a, b, phone, &pb.SendRequest{Content: &pb.SendRequest_Audio{Audio: &pb.Media{Data: data, MimeType: "audio/ogg; codecs=opus", VoiceNote: true, Seconds: 1}}})
 		audio := got.GetAudio()
-		if !bytes.Equal(audio.GetData(), data) || !audio.GetVoiceNote() || audio.GetSeconds() != 1 {
-			t.Fatalf("audio mismatch: %d bytes (want %d), voice %v, seconds %d", len(audio.GetData()), len(data), audio.GetVoiceNote(), audio.GetSeconds())
+		assertMedia(t, audio, data, "audio/ogg; codecs=opus")
+		if !audio.GetVoiceNote() || audio.GetSeconds() != 1 {
+			t.Fatalf("audio details: voice %v, seconds %d", audio.GetVoiceNote(), audio.GetSeconds())
+		}
+	})
+	t.Run("health counters", func(t *testing.T) {
+		stA, errA := a.Status(context.Background(), &pb.StatusRequest{})
+		stB, errB := b.Status(context.Background(), &pb.StatusRequest{})
+		if errA != nil || errB != nil || stA.GetMessagesSent() < 3 || stB.GetMessagesReceived() < 3 || stB.GetMessagesDelivered() < 3 {
+			t.Fatalf("counters do not reflect the 3 round trips: A=%v B=%v (%v %v)", stA, stB, errA, errB)
+		}
+		if acc := stA.GetAccounts(); len(acc) != 1 || acc[0].GetState() != pb.AccountState_ACCOUNT_STATE_CONNECTED || acc[0].GetLid() == "" {
+			t.Fatalf("account health: %v", acc)
+		}
+		if report, code := statusReport(stB, stB.GetWaVersion(), nil); code != 0 || !strings.Contains(report, "CONNECTED") {
+			t.Fatalf("operator report of a healthy gateway: code %d\n%s", code, report)
 		}
 	})
 }
@@ -354,9 +371,13 @@ func roundTrip(t *testing.T, sb *server, a, b pb.WhatsAppServiceClient, phone st
 	defer waitSubs(t, sb, 0) // runs after cancel: the subscription must be gone
 	defer cancel()
 	req.Account, req.To = phone, phone
+	before := time.Now()
 	sent, err := a.Send(ctx, req)
 	if err != nil {
 		t.Fatalf("Send: %v", err)
+	}
+	if sent.GetId() == "" || sent.GetFrom() != phone || sent.GetTo() != phone || !near(sent.GetSentAt().AsTime(), before) {
+		t.Fatalf("SendResponse incomplete: %v", sent)
 	}
 	for {
 		ev, err := stream.Recv()
@@ -364,11 +385,46 @@ func roundTrip(t *testing.T, sb *server, a, b pb.WhatsAppServiceClient, phone st
 			t.Fatalf("message %s not received by device B: %v", sent.GetId(), err)
 		}
 		if m := ev.GetMessage(); m.GetId() == sent.GetId() {
-			if !m.GetFromMe() || m.GetFrom() != phone {
-				t.Fatalf("unexpected envelope: %v", m)
-			}
+			assertLiveEnvelope(t, ev, m, sent, phone)
 			return m
 		}
+	}
+}
+
+// near reports whether a WhatsApp timestamp (second precision, server clock) is close to ref.
+func near(ts, ref time.Time) bool {
+	d := ts.Sub(ref)
+	return d > -2*time.Minute && d < 2*time.Minute
+}
+
+// assertLiveEnvelope checks a message received from WhatsApp carries its full envelope.
+func assertLiveEnvelope(t *testing.T, ev *pb.SubscribeResponse, m *pb.Message, sent *pb.SendResponse, phone string) {
+	t.Helper()
+	if ev.GetAccount() != phone || m.GetTo() != phone || m.GetFrom() != phone || !m.GetFromMe() {
+		t.Fatalf("who/to whom wrong: account=%s %v", ev.GetAccount(), m)
+	}
+	if m.GetChat() == "" || m.GetFromLid() == "" {
+		t.Fatalf("chat/sender LID missing: %v", m)
+	}
+	sentAt, receivedAt := m.GetSentAt().AsTime(), m.GetReceivedAt().AsTime()
+	// sent_at comes from the delivered stanza, SendResponse from the server ack: same event, may differ by a second.
+	if skew := sentAt.Sub(sent.GetSentAt().AsTime()).Abs(); skew > 5*time.Second || !near(receivedAt, time.Now()) ||
+		receivedAt.Before(sentAt.Add(-time.Minute)) {
+		t.Fatalf("timestamps wrong: sent_at=%v (send said %v) received_at=%v", sentAt, sent.GetSentAt().AsTime(), receivedAt)
+	}
+	if m.GetForwarded() || m.GetViewOnce() || m.GetEdited() || m.GetReplyToId() != "" {
+		t.Fatalf("unexpected flags: %v", m)
+	}
+}
+
+// assertMedia checks received media against what was sent: bytes, announced size and hash.
+func assertMedia(t *testing.T, got *pb.Media, data []byte, mime string) {
+	t.Helper()
+	sum := sha256.Sum256(data)
+	if !bytes.Equal(got.GetData(), data) || got.GetMimeType() != mime ||
+		got.GetFileLength() != uint64(len(data)) || !bytes.Equal(got.GetFileSha256(), sum[:]) {
+		t.Fatalf("media mismatch: %d bytes (want %d), mime %q, file_length %d, sha256 ok=%v",
+			len(got.GetData()), len(data), got.GetMimeType(), got.GetFileLength(), bytes.Equal(got.GetFileSha256(), sum[:]))
 	}
 }
 

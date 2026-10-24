@@ -4,10 +4,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"image"
+	_ "image/jpeg" // image.DecodeConfig: JPEG dimensions of sent images.
+	_ "image/png"  // image.DecodeConfig: PNG dimensions of sent images.
 	"io"
 	"net"
 	"net/http"
@@ -39,6 +43,7 @@ import (
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // eventBuffer is the per-subscriber queue length. A subscriber that falls this far
@@ -67,6 +72,8 @@ type server struct {
 	health   *health.Server
 	selfChat bool
 	outdated atomic.Bool
+	started  time.Time
+	stats    stats
 
 	mu       sync.RWMutex
 	accounts map[string]*whatsmeow.Client
@@ -75,13 +82,18 @@ type server struct {
 	subs  map[*subscriber]struct{}
 }
 
+// stats are the traffic counters reported by Status (lock-free).
+type stats struct {
+	received, delivered, sent, dropped atomic.Uint64
+}
+
 // subscriber is one Subscribe stream and its filters; an empty filter matches everything.
 type subscriber struct {
 	accounts map[string]struct{}
 	peers    map[string]struct{}
 	ch       chan *pb.SubscribeResponse
 	gone     chan struct{}
-	once     sync.Once
+	closed   atomic.Bool
 }
 
 // main runs the gateway, or a one-shot probe when -healthcheck or -status is given.
@@ -145,7 +157,7 @@ func newServer(ctx context.Context, dsn string, log waLog.Logger, selfChat bool)
 		return nil, fmt.Errorf("session store: %w", err)
 	}
 	return &server{
-		db: db, log: log, health: health.NewServer(), selfChat: selfChat,
+		db: db, log: log, health: health.NewServer(), selfChat: selfChat, started: time.Now(),
 		accounts: map[string]*whatsmeow.Client{}, subs: map[*subscriber]struct{}{},
 	}, nil
 }
@@ -274,10 +286,14 @@ func (s *server) onMessage(account, ownLID string, cli *whatsmeow.Client, m *eve
 		return pn
 	}
 	peer, ok := peerOf(&m.Info, account, ownLID, s.selfChat, resolve)
-	if !ok || !s.wanted(account, peer) {
+	if !ok {
 		return
 	}
-	msg := toMessage(m, peer)
+	s.stats.received.Add(1)
+	if !s.wanted(account, peer) {
+		return
+	}
+	msg := toMessage(m, account, peer)
 	if msg == nil {
 		return
 	}
@@ -285,7 +301,8 @@ func (s *server) onMessage(account, ownLID string, cli *whatsmeow.Client, m *eve
 		s.log.Warnf("download media %s/%s: %v", account, m.Info.ID, err)
 		return
 	}
-	s.publish(account, peer, &pb.SubscribeResponse{Account: account, Event: &pb.SubscribeResponse_Message{Message: msg}})
+	n := s.publish(account, peer, &pb.SubscribeResponse{Account: account, Event: &pb.SubscribeResponse_Message{Message: msg}})
+	s.stats.delivered.Add(uint64(n)) //nolint:gosec // n counts subscribers: never negative
 }
 
 // peerOf returns the phone number of the other party of a one-to-one chat ("lid:<id>" when
@@ -321,26 +338,61 @@ func phoneOf(sender, alt types.JID, resolve func(types.JID) types.JID) string {
 	return "lid:" + sender.User
 }
 
-// toMessage converts a text, image or audio message to its API form; nil means unsupported.
-// Media bytes are filled in later by fetchMedia.
-func toMessage(m *events.Message, peer string) *pb.Message {
-	c := m.Message
-	out := &pb.Message{Id: m.Info.ID, From: peer, PushName: m.Info.PushName, Timestamp: m.Info.Timestamp.Unix(), FromMe: m.Info.IsFromMe}
+// toMessage converts a text, image or audio message received by account from peer into its
+// API form with the full envelope; nil means unsupported. Media bytes are filled in later by
+// fetchMedia.
+func toMessage(m *events.Message, account, peer string) *pb.Message {
+	out := &pb.Message{}
+	reply := setContent(out, m.Message)
+	if out.Content == nil {
+		return nil
+	}
+	info := &m.Info
+	out.Id, out.From, out.To, out.PushName, out.FromMe = info.ID, peer, account, info.PushName, info.IsFromMe
+	out.FromLid, out.Chat = lidOf(info.Sender, info.SenderAlt), info.Chat.User+"@"+info.Chat.Server // chats carry no device part
+	out.SentAt, out.ReceivedAt = timestamppb.New(info.Timestamp), timestamppb.Now()
+	out.ReplyToId, out.Forwarded = reply.GetStanzaID(), reply.GetIsForwarded()
+	out.Ephemeral, out.ViewOnce, out.Edited = m.IsEphemeral, m.IsViewOnce, m.IsEdit
+	return out
+}
+
+// setContent fills the content of out from c (left nil when unsupported) and returns the
+// context info carrying reply and forward data.
+func setContent(out *pb.Message, c *waE2E.Message) *waE2E.ContextInfo {
 	switch {
 	case c.GetConversation() != "":
 		out.Content = &pb.Message_Text{Text: c.GetConversation()}
 	case c.GetExtendedTextMessage().GetText() != "":
-		out.Content = &pb.Message_Text{Text: c.GetExtendedTextMessage().GetText()}
+		t := c.GetExtendedTextMessage()
+		out.Content = &pb.Message_Text{Text: t.GetText()}
+		return t.GetContextInfo()
 	case c.GetImageMessage() != nil:
 		img := c.GetImageMessage()
-		out.Content = &pb.Message_Image{Image: &pb.Media{MimeType: img.GetMimetype(), Caption: img.GetCaption()}}
+		out.Content = &pb.Message_Image{Image: &pb.Media{
+			MimeType: img.GetMimetype(), Caption: img.GetCaption(), FileLength: img.GetFileLength(),
+			FileSha256: img.GetFileSHA256(), Width: img.GetWidth(), Height: img.GetHeight(),
+		}}
+		return img.GetContextInfo()
 	case c.GetAudioMessage() != nil:
 		a := c.GetAudioMessage()
-		out.Content = &pb.Message_Audio{Audio: &pb.Media{MimeType: a.GetMimetype(), VoiceNote: a.GetPTT(), Seconds: a.GetSeconds()}}
-	default:
-		return nil
+		out.Content = &pb.Message_Audio{Audio: &pb.Media{
+			MimeType: a.GetMimetype(), VoiceNote: a.GetPTT(), Seconds: a.GetSeconds(),
+			FileLength: a.GetFileLength(), FileSha256: a.GetFileSHA256(),
+		}}
+		return a.GetContextInfo()
 	}
-	return out
+	return nil
+}
+
+// lidOf returns the sender's LID from its address or alternate address ("" if unknown).
+func lidOf(sender, alt types.JID) string {
+	switch types.HiddenUserServer {
+	case sender.Server:
+		return sender.User
+	case alt.Server:
+		return alt.User
+	}
+	return ""
 }
 
 // fetchMedia downloads and decrypts the media of c into out (text needs nothing, not even a
@@ -381,21 +433,26 @@ func (s *server) wanted(account, peer string) bool {
 	return false
 }
 
-// publish hands the same event pointer to every matching subscriber without blocking;
-// subscribers whose queue is full are dropped.
-func (s *server) publish(account, peer string, ev *pb.SubscribeResponse) {
+// publish hands the same event pointer to every matching subscriber without blocking and
+// returns how many got it; subscribers whose queue is full are dropped (and counted once).
+func (s *server) publish(account, peer string, ev *pb.SubscribeResponse) int {
 	s.subMu.RLock()
 	defer s.subMu.RUnlock()
+	n := 0
 	for sub := range s.subs {
 		if !sub.matches(account, peer) {
 			continue
 		}
 		select {
 		case sub.ch <- ev:
+			n++
 		default:
-			sub.drop()
+			if sub.drop() {
+				s.stats.dropped.Add(1)
+			}
 		}
 	}
+	return n
 }
 
 // matches reports whether the subscriber selects account and peer ("" = account event).
@@ -412,9 +469,14 @@ func (sub *subscriber) matches(account, peer string) bool {
 	return ok
 }
 
-// drop ends the subscription; safe to call many times and from many goroutines.
-func (sub *subscriber) drop() {
-	sub.once.Do(func() { close(sub.gone) })
+// drop ends the subscription and reports whether this call ended it; safe to call many
+// times and from many goroutines.
+func (sub *subscriber) drop() bool {
+	if !sub.closed.CompareAndSwap(false, true) {
+		return false
+	}
+	close(sub.gone)
+	return true
 }
 
 // newSubscriber validates the filters of req.
@@ -600,7 +662,7 @@ func (s *server) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.DeleteR
 
 // Send delivers a text, image or audio message from a linked account.
 func (s *server) Send(ctx context.Context, req *pb.SendRequest) (*pb.SendResponse, error) {
-	_, cli, err := s.lookup(req.GetAccount())
+	from, cli, err := s.lookup(req.GetAccount())
 	if err != nil {
 		return nil, err
 	}
@@ -619,7 +681,8 @@ func (s *server) Send(ctx context.Context, req *pb.SendRequest) (*pb.SendRespons
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, "send: %v", err)
 	}
-	return &pb.SendResponse{Id: resp.ID, Timestamp: resp.Timestamp.Unix()}, nil
+	s.stats.sent.Add(1)
+	return &pb.SendResponse{Id: resp.ID, SentAt: timestamppb.New(resp.Timestamp), From: from, To: to}, nil
 }
 
 // outgoing builds the WhatsApp message of req, uploading media first. Request fields are
@@ -633,9 +696,11 @@ func outgoing(ctx context.Context, cli *whatsmeow.Client, req *pb.SendRequest) (
 		return &waE2E.Message{Conversation: &c.Text}, nil
 	case *pb.SendRequest_Image:
 		up, err := upload(ctx, cli, c.Image, whatsmeow.MediaImage)
+		w, h := imageSize(c.Image.GetData())
 		return &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
 			URL: &up.URL, DirectPath: &up.DirectPath, MediaKey: up.MediaKey, FileEncSHA256: up.FileEncSHA256,
 			FileSHA256: up.FileSHA256, FileLength: &up.FileLength, Mimetype: &c.Image.MimeType, Caption: &c.Image.Caption,
+			Width: &w, Height: &h,
 		}}, err
 	case *pb.SendRequest_Audio:
 		up, err := upload(ctx, cli, c.Audio, whatsmeow.MediaAudio)
@@ -646,6 +711,15 @@ func outgoing(ctx context.Context, cli *whatsmeow.Client, req *pb.SendRequest) (
 		}}, err
 	}
 	return nil, status.Error(codes.InvalidArgument, "content is required: text, image or audio")
+}
+
+// imageSize returns the pixel size of a JPEG or PNG image from its header (0, 0 if unknown).
+func imageSize(data []byte) (width, height uint32) {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > 1<<20 || cfg.Height > 1<<20 {
+		return 0, 0
+	}
+	return uint32(cfg.Width), uint32(cfg.Height) //nolint:gosec // bounded to (0, 2^20] above
 }
 
 // upload validates and uploads media to WhatsApp.
@@ -660,12 +734,19 @@ func upload(ctx context.Context, cli *whatsmeow.Client, m *pb.Media, kind whatsm
 	return up, err
 }
 
-// Status reports the accounts and the protocol versions in use.
+// Status reports the accounts, the protocol versions in use and the traffic counters.
 func (s *server) Status(context.Context, *pb.StatusRequest) (*pb.StatusResponse, error) {
-	out := &pb.StatusResponse{WhatsmeowVersion: whatsmeowVersion(), WaVersion: store.GetWAVersion().String(), Outdated: s.outdated.Load()}
+	out := &pb.StatusResponse{
+		WhatsmeowVersion: whatsmeowVersion(), WaVersion: store.GetWAVersion().String(), Outdated: s.outdated.Load(),
+		StartedAt: timestamppb.New(s.started), MessagesReceived: s.stats.received.Load(),
+		MessagesDelivered: s.stats.delivered.Load(), MessagesSent: s.stats.sent.Load(), SubscribersDropped: s.stats.dropped.Load(),
+	}
+	s.subMu.RLock()
+	out.Subscribers = uint32(len(s.subs)) //nolint:gosec // number of open streams, far below 2^32
+	s.subMu.RUnlock()
 	s.mu.RLock()
 	for phone, cli := range s.accounts {
-		out.Accounts = append(out.Accounts, &pb.Account{Phone: phone, State: stateOf(cli)})
+		out.Accounts = append(out.Accounts, &pb.Account{Phone: phone, State: stateOf(cli), Lid: cli.Store.LID.User})
 	}
 	s.mu.RUnlock()
 	slices.SortFunc(out.Accounts, func(a, b *pb.Account) int { return strings.Compare(a.Phone, b.Phone) })
@@ -787,28 +868,50 @@ func fetchStatus(addr string) (*pb.StatusResponse, error) {
 	return pb.NewWhatsAppServiceClient(conn).Status(ctx, &pb.StatusRequest{})
 }
 
-// statusReport renders the status and the protocol diagnosis, with the printStatus exit code.
+// statusReport renders the status for operators with the printStatus exit code: 1 when WhatsApp
+// rejected the client, 2 (warning) when an account is offline or upstream moved on, else 0.
 func statusReport(st *pb.StatusResponse, upstream string, upstreamErr error) (string, int) {
 	var b strings.Builder
-	fmt.Fprintf(&b, "whatsmeow %s · protocol %s · %d account(s)\n", st.GetWhatsmeowVersion(), st.GetWaVersion(), len(st.GetAccounts()))
-	for _, a := range st.GetAccounts() {
-		b.WriteString("  +" + a.GetPhone() + " " + strings.TrimPrefix(a.GetState().String(), "ACCOUNT_STATE_") + "\n")
-	}
+	uptime := time.Since(st.GetStartedAt().AsTime()).Truncate(time.Second)
+	fmt.Fprintf(&b, "whatsmeow %s · protocol %s · up %s\n", st.GetWhatsmeowVersion(), st.GetWaVersion(), uptime)
+	fmt.Fprintf(&b, "streams %d · received %d · delivered %d · sent %d · dropped %d\n", st.GetSubscribers(),
+		st.GetMessagesReceived(), st.GetMessagesDelivered(), st.GetMessagesSent(), st.GetSubscribersDropped())
+	code := accountsReport(&b, st.GetAccounts())
+	code = max(code, protocolReport(&b, st, upstream, upstreamErr))
+	return b.String(), code
+}
+
+// accountsReport lists the accounts; a linked account that is offline is a warning (2).
+func accountsReport(b *strings.Builder, accounts []*pb.Account) int {
+	fmt.Fprintf(b, "%d account(s)\n", len(accounts))
 	code := 0
+	for _, a := range accounts {
+		note := ""
+		if a.GetState() == pb.AccountState_ACCOUNT_STATE_DISCONNECTED {
+			note, code = "  <- offline (reconnecting)", 2
+		}
+		fmt.Fprintf(b, "  +%s %s%s\n", a.GetPhone(), strings.TrimPrefix(a.GetState().String(), "ACCOUNT_STATE_"), note)
+	}
+	return code
+}
+
+// protocolReport appends the protocol diagnosis: 1 when WhatsApp rejected the client,
+// 2 when whatsmeow upstream announces a newer protocol, else 0.
+func protocolReport(b *strings.Builder, st *pb.StatusResponse, upstream string, upstreamErr error) int {
 	switch {
 	case st.GetOutdated():
-		b.WriteString("OUTDATED: WhatsApp rejected this client. Run `make update-whatsmeow`, open a PR and deploy.\n")
-		code = 1
+		b.WriteString("OUTDATED: WhatsApp rejected this client. Run `make update-whatsmeow WHATSMEOW=<commit>`, open a PR and deploy.\n")
+		return 1
 	case upstreamErr != nil:
 		b.WriteString("upstream protocol check skipped: " + upstreamErr.Error() + "\n")
 	case newer(upstream, st.GetWaVersion()):
 		b.WriteString("UPDATE AVAILABLE: whatsmeow upstream speaks protocol " + upstream + " (deployed " + st.GetWaVersion() +
 			"). The pinned build keeps working until WhatsApp rejects it; plan `make update-whatsmeow WHATSMEOW=<commit>`.\n")
-		code = 2
+		return 2
 	default:
 		b.WriteString("protocol up to date with whatsmeow upstream (" + upstream + ")\n")
 	}
-	return b.String(), code
+	return 0
 }
 
 // upstreamVersion fetches the protocol version of whatsmeow's main branch.

@@ -6,13 +6,13 @@ package main
 import (
 	"fmt"
 	"testing"
-	"time"
 
 	"kapa/whatsapp/pb"
 
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // sinkStr and sinkOK keep results alive so the compiler cannot drop the benchmarked work.
@@ -51,7 +51,7 @@ func BenchmarkToMessage(b *testing.B) {
 	m := msgEvent("34699888777", &waE2E.Message{Conversation: proto.String("hola, ¿qué tal?")})
 	b.ReportAllocs()
 	for b.Loop() {
-		sinkOK = toMessage(m, "34699888777") != nil
+		sinkOK = toMessage(m, testPhone, "34699888777") != nil
 	}
 }
 
@@ -114,7 +114,8 @@ func BenchmarkOnMessage(b *testing.B) {
 // BenchmarkEncode measures wire encoding of an event: the one unavoidable copy per subscriber.
 func BenchmarkEncode(b *testing.B) {
 	text := &pb.SubscribeResponse{Account: testPhone, Event: &pb.SubscribeResponse_Message{Message: &pb.Message{
-		Id: "3EB0C767D26A1D6E", From: "34699888777", Timestamp: time.Now().Unix(), Content: &pb.Message_Text{Text: "hola"},
+		Id: "3EB0C767D26A1D6E", From: "34699888777", To: testPhone, SentAt: timestamppb.Now(), ReceivedAt: timestamppb.Now(),
+		Chat: "34699888777@s.whatsapp.net", Content: &pb.Message_Text{Text: "hola"},
 	}}}
 	image := &pb.SubscribeResponse{Account: testPhone, Event: &pb.SubscribeResponse_Message{Message: &pb.Message{
 		Id: "3EB0C767D26A1D6F", From: "34699888777", Content: &pb.Message_Image{Image: &pb.Media{Data: make([]byte, 1<<20), MimeType: "image/jpeg"}},

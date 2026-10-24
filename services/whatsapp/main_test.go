@@ -7,6 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/jpeg"
+	"image/png"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -32,6 +35,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // testPhone is the account used by unit tests (never contacted: no network is involved).
@@ -273,13 +277,11 @@ func TestToMessage(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			m := toMessage(msgEvent("34699888777", c.in), "34699888777")
+			m := toMessage(msgEvent("34699888777", c.in), testPhone, "34699888777")
 			if m == nil || !c.check(m) {
 				t.Fatalf("unexpected conversion: %v", m)
 			}
-			if m.GetId() != "MSGID" || m.GetFrom() != "34699888777" || m.GetPushName() != "Ana" || m.GetTimestamp() != 1_700_000_000 || m.GetFromMe() {
-				t.Fatalf("bad envelope: %v", m)
-			}
+			assertEnvelope(t, m)
 		})
 	}
 	unsupported := []*waE2E.Message{
@@ -293,9 +295,78 @@ func TestToMessage(t *testing.T) {
 		{ExtendedTextMessage: &waE2E.ExtendedTextMessage{}},
 	}
 	for i, in := range unsupported {
-		if m := toMessage(msgEvent("34699888777", in), "34699888777"); m != nil {
+		if m := toMessage(msgEvent("34699888777", in), testPhone, "34699888777"); m != nil {
 			t.Errorf("unsupported #%d converted: %v", i, m)
 		}
+	}
+}
+
+// assertEnvelope checks the envelope every message must carry: who, to whom, when, where.
+func assertEnvelope(t *testing.T, m *pb.Message) {
+	t.Helper()
+	if m.GetId() != "MSGID" || m.GetFrom() != "34699888777" || m.GetTo() != testPhone || m.GetPushName() != "Ana" ||
+		m.GetFromMe() || m.GetChat() != "34699888777@s.whatsapp.net" || m.GetFromLid() != "" {
+		t.Fatalf("bad envelope: %v", m)
+	}
+	if !m.GetSentAt().AsTime().Equal(time.Unix(1_700_000_000, 0)) {
+		t.Fatalf("sent_at = %v", m.GetSentAt().AsTime())
+	}
+	if since := time.Since(m.GetReceivedAt().AsTime()); since < 0 || since > time.Minute {
+		t.Fatalf("received_at = %v, want now", m.GetReceivedAt().AsTime())
+	}
+}
+
+// TestToMessageMetadata checks LID senders, reply/forward context, chat flags and media details.
+func TestToMessageMetadata(t *testing.T) {
+	sha := []byte{0xde, 0xad, 0xbe, 0xef}
+	reply := &waE2E.ContextInfo{StanzaID: proto.String("ORIGINAL"), IsForwarded: proto.Bool(true)}
+	m := msgEvent("34699888777", &waE2E.Message{ImageMessage: &waE2E.ImageMessage{
+		Mimetype: proto.String("image/png"), FileLength: proto.Uint64(2048), FileSHA256: sha,
+		Width: proto.Uint32(640), Height: proto.Uint32(480), ContextInfo: reply,
+	}})
+	m.Info.Sender, m.Info.SenderAlt, m.Info.Chat = lidJID("98765"), pnJID("34699888777"), lidJID("98765")
+	m.IsEphemeral, m.IsViewOnce, m.IsEdit = true, true, true
+	got := toMessage(m, testPhone, "34699888777")
+	img := got.GetImage()
+	if got.GetFromLid() != "98765" || got.GetChat() != "98765@lid" || got.GetReplyToId() != "ORIGINAL" || !got.GetForwarded() ||
+		!got.GetEphemeral() || !got.GetViewOnce() || !got.GetEdited() || got.GetTo() != testPhone {
+		t.Fatalf("metadata lost: %v", got)
+	}
+	if img.GetFileLength() != 2048 || !bytes.Equal(img.GetFileSha256(), sha) || img.GetWidth() != 640 || img.GetHeight() != 480 {
+		t.Fatalf("media metadata lost: %v", img)
+	}
+	audio := toMessage(msgEvent("34699888777", &waE2E.Message{AudioMessage: &waE2E.AudioMessage{
+		Mimetype: proto.String("audio/ogg; codecs=opus"), FileLength: proto.Uint64(99), FileSHA256: sha,
+		ContextInfo: &waE2E.ContextInfo{StanzaID: proto.String("Q")},
+	}}), testPhone, "34699888777")
+	if audio.GetAudio().GetFileLength() != 99 || !bytes.Equal(audio.GetAudio().GetFileSha256(), sha) || audio.GetReplyToId() != "Q" {
+		t.Fatalf("audio metadata lost: %v", audio)
+	}
+	text := toMessage(msgEvent("34699888777", &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+		Text: proto.String("re"), ContextInfo: &waE2E.ContextInfo{StanzaID: proto.String("T")},
+	}}), testPhone, "34699888777")
+	if text.GetReplyToId() != "T" || text.GetForwarded() || text.GetEphemeral() {
+		t.Fatalf("text metadata wrong: %v", text)
+	}
+}
+
+// TestImageSize checks dimensions are read from JPEG and PNG headers and unknown data gives 0x0.
+func TestImageSize(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 31, 17))
+	var jpg, pngBuf bytes.Buffer
+	if err := jpeg.Encode(&jpg, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := png.Encode(&pngBuf, img); err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{"jpeg": jpg.Bytes(), "png": pngBuf.Bytes()} {
+		if w, h := imageSize(data); w != 31 || h != 17 {
+			t.Errorf("%s: %dx%d, want 31x17", name, w, h)
+		}
+	}
+	if w, h := imageSize([]byte("not an image")); w != 0 || h != 0 {
+		t.Errorf("garbage: %dx%d, want 0x0", w, h)
 	}
 }
 
@@ -376,7 +447,13 @@ func TestPublishDropsSlowSubscriber(t *testing.T) {
 	if len(fast.ch) != 3 {
 		t.Fatalf("fast subscriber got %d events, want 3", len(fast.ch))
 	}
-	slow.drop() // idempotent
+	if slow.drop() {
+		t.Fatal("drop must report false once the subscription already ended")
+	}
+	s.publish(testPhone, "", &pb.SubscribeResponse{}) // slow is still registered and still full
+	if got := s.stats.dropped.Load(); got != 1 {
+		t.Fatalf("dropped = %d, want 1 (counted once per subscriber)", got)
+	}
 }
 
 // TestOnMessageNoWorkWithoutSubscribers proves media is neither converted nor downloaded
@@ -406,6 +483,10 @@ func TestOnMessageDelivers(t *testing.T) {
 	unsupported := msgEvent("34699888777", &waE2E.Message{StickerMessage: &waE2E.StickerMessage{}})
 	s.onMessage(testPhone, "", nil, unsupported)
 	empty(t, sub)
+	// 1:1 messages are counted (text + unsupported sticker), the group is not; one delivery.
+	if r, d := s.stats.received.Load(), s.stats.delivered.Load(); r != 2 || d != 1 {
+		t.Fatalf("received=%d delivered=%d, want 2 and 1", r, d)
+	}
 }
 
 // TestHandlerLifecycle checks every lifecycle event the handler translates.
@@ -616,8 +697,14 @@ func TestDeletePendingPairing(t *testing.T) {
 // TestStatus checks sorting, states and versions.
 func TestStatus(t *testing.T) {
 	s := newTestServer()
+	s.started = time.Now().Add(-time.Hour)
 	s.attach("34600000003", fakeClient("34600000003", true))
 	s.attach("34600000001", fakeClient("34600000001", false))
+	s.stats.received.Store(7)
+	s.stats.delivered.Store(5)
+	s.stats.sent.Store(3)
+	s.stats.dropped.Store(1)
+	addSub(t, s, &pb.SubscribeRequest{}, 1)
 	st, err := startBuf(t, s).Status(context.Background(), &pb.StatusRequest{})
 	if err != nil {
 		t.Fatal(err)
@@ -629,6 +716,44 @@ func TestStatus(t *testing.T) {
 	}
 	if !strings.HasPrefix(st.GetWhatsmeowVersion(), "v") || len(versionParts(st.GetWaVersion())) != 3 || st.GetOutdated() {
 		t.Fatalf("unexpected versions: %v", st)
+	}
+	if st.GetMessagesReceived() != 7 || st.GetMessagesDelivered() != 5 || st.GetMessagesSent() != 3 ||
+		st.GetSubscribersDropped() != 1 || st.GetSubscribers() != 1 || !st.GetStartedAt().AsTime().Equal(s.started.Truncate(time.Nanosecond)) {
+		t.Fatalf("unexpected counters: %v", st)
+	}
+}
+
+// TestStatusReport checks the operator report: counters, account health and exit codes.
+func TestStatusReport(t *testing.T) {
+	ours := store.GetWAVersion().String()
+	base := func(states ...pb.AccountState) *pb.StatusResponse {
+		st := &pb.StatusResponse{WaVersion: ours, StartedAt: timestamppb.Now(), MessagesReceived: 4, MessagesSent: 2}
+		for i, state := range states {
+			st.Accounts = append(st.Accounts, &pb.Account{Phone: fmt.Sprintf("3460000000%d", i), State: state})
+		}
+		return st
+	}
+	connected, offline := pb.AccountState_ACCOUNT_STATE_CONNECTED, pb.AccountState_ACCOUNT_STATE_DISCONNECTED
+	outdated := base(connected)
+	outdated.Outdated = true
+	cases := []struct {
+		name     string
+		st       *pb.StatusResponse
+		upstream string
+		want     int
+		contains string
+	}{
+		{"healthy", base(connected), ours, 0, "received 4 · delivered 0 · sent 2"},
+		{"offline account", base(connected, offline), ours, 2, "offline (reconnecting)"},
+		{"pairing is not a warning", base(pb.AccountState_ACCOUNT_STATE_PAIRING), ours, 0, "PAIRING"},
+		{"upstream ahead", base(connected), "9.9.9", 2, "UPDATE AVAILABLE"},
+		{"outdated wins", outdated, "9.9.9", 1, "OUTDATED"},
+	}
+	for _, c := range cases {
+		report, code := statusReport(c.st, c.upstream, nil)
+		if code != c.want || !strings.Contains(report, c.contains) {
+			t.Errorf("%s: code %d, report %q; want %d containing %q", c.name, code, report, c.want, c.contains)
+		}
 	}
 }
 

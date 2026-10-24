@@ -5,6 +5,8 @@ syntax = "proto3";
 // conversations to the rest of the platform.
 package kapa.whatsapp.v1;
 
+import "google/protobuf/timestamp.proto";
+
 option go_package = "kapa/whatsapp/pb;pb";
 
 // WhatsAppService links accounts, sends messages and streams incoming events.
@@ -106,6 +108,14 @@ message Media {
   bool voice_note = 4;
   // Audio duration in seconds, if known. Ignored for images.
   uint32 seconds = 5;
+  // Size of data in bytes, as announced by the sender. Received messages only.
+  uint64 file_length = 6;
+  // SHA-256 of data, as announced by the sender (verified on download). Received messages only.
+  bytes file_sha256 = 7;
+  // Image width in pixels (0 if unknown). Computed when sending JPEG/PNG images.
+  uint32 width = 8;
+  // Image height in pixels (0 if unknown). Computed when sending JPEG/PNG images.
+  uint32 height = 9;
 }
 
 // SendRequest describes a message to send.
@@ -129,8 +139,12 @@ message SendRequest {
 message SendResponse {
   // WhatsApp message ID.
   string id = 1;
-  // Server timestamp, Unix seconds.
-  int64 timestamp = 2;
+  // When WhatsApp accepted the message (server time).
+  google.protobuf.Timestamp sent_at = 2;
+  // Phone number of the sending account.
+  string from = 3;
+  // Phone number of the recipient.
+  string to = 4;
 }
 
 // SubscribeRequest selects which events to receive. Empty lists match everything.
@@ -154,16 +168,16 @@ message SubscribeResponse {
   }
 }
 
-// Message is an incoming one-to-one message.
+// Message is an incoming one-to-one message with everything needed to process it later.
 message Message {
-  // WhatsApp message ID.
+  // WhatsApp message ID (unique per chat; the same ID is reported by the sender's SendResponse).
   string id = 1;
   // Sender phone number, or "lid:<id>" when WhatsApp hides it and it cannot be resolved.
   string from = 2;
   // Sender display name, if known.
   string push_name = 3;
-  // Send time, Unix seconds.
-  int64 timestamp = 4;
+  // When the sender sent the message (WhatsApp server time, second precision).
+  google.protobuf.Timestamp sent_at = 4;
   // True only for "message yourself" chat messages, delivered when WA_SELF_CHAT=1.
   bool from_me = 5;
   // Message content.
@@ -175,6 +189,24 @@ message Message {
     // An audio file or voice note, downloaded and decrypted.
     Media audio = 8;
   }
+  // Receiver phone number: the linked account that received the message.
+  string to = 9;
+  // Sender's WhatsApp LID (privacy identifier), if known; stable even when the phone is hidden.
+  string from_lid = 10;
+  // Chat address as WhatsApp reports it, e.g. "34600111222@s.whatsapp.net" or "123@lid".
+  string chat = 11;
+  // When this gateway received and decrypted the message.
+  google.protobuf.Timestamp received_at = 12;
+  // ID of the message this one replies to (quotes), if any.
+  string reply_to_id = 13;
+  // True if the message was forwarded.
+  bool forwarded = 14;
+  // True if sent in a chat with disappearing messages.
+  bool ephemeral = 15;
+  // True if sent as "view once".
+  bool view_once = 16;
+  // True if this is an edit of a previously sent message.
+  bool edited = 17;
 }
 
 // AccountEvent reports a lifecycle change of an account.
@@ -190,7 +222,7 @@ message AccountEvent {
 // StatusRequest is empty.
 message StatusRequest {}
 
-// StatusResponse describes the gateway.
+// StatusResponse describes the gateway and its traffic since it started.
 message StatusResponse {
   // Version of the whatsmeow library compiled in.
   string whatsmeow_version = 1;
@@ -200,6 +232,18 @@ message StatusResponse {
   bool outdated = 3;
   // All known accounts, sorted by phone number.
   repeated Account accounts = 4;
+  // When the gateway process started.
+  google.protobuf.Timestamp started_at = 5;
+  // Number of open Subscribe streams.
+  uint32 subscribers = 6;
+  // One-to-one messages received from WhatsApp (any type; groups, status updates and channels excluded).
+  uint64 messages_received = 7;
+  // Message events handed to subscribers (one per subscriber and message).
+  uint64 messages_delivered = 8;
+  // Messages sent with Send.
+  uint64 messages_sent = 9;
+  // Subscribers disconnected for falling behind.
+  uint64 subscribers_dropped = 10;
 }
 
 // Account is one known account.
@@ -208,4 +252,6 @@ message Account {
   string phone = 1;
   // Current state.
   AccountState state = 2;
+  // The account's own WhatsApp LID, once linked.
+  string lid = 3;
 }

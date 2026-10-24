@@ -18,6 +18,17 @@ Code: one hand-written file, `main.go`; `pb/` is generated (`make proto`).
 
 Plus the standard `grpc.health.v1.Health` service.
 
+**Every message carries its full envelope**, so it can be processed later without lookups: `id`,
+`from` (sender phone) and `from_lid`, `to` (the receiving account), `chat`, `push_name`, `sent_at`
+(WhatsApp time) and `received_at` (gateway time) as `google.protobuf.Timestamp`, `reply_to_id`,
+`forwarded`, `ephemeral`, `view_once`, `edited`, and for media `mime_type`, `file_length`,
+`file_sha256` (verified on download), `width`/`height` (images), `seconds`/`voice_note` (audio).
+`Send` returns `id`, `from`, `to` and `sent_at`.
+
+**Health** (`Status`, shown by `make monitor`): uptime, open streams, messages received / delivered /
+sent, subscribers dropped, and every account with its state and LID. An offline account or a newer
+upstream protocol is a warning; WhatsApp rejecting the client is an issue and fails the health check.
+
 **What is delivered:** text, images and audio (decrypted bytes inline) from one-to-one chats only.
 Groups, status updates, broadcast lists, channels, your own outgoing messages and every other
 message type are discarded on arrival. Senders hidden behind a WhatsApp LID are resolved to their

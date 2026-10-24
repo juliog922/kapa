@@ -13,6 +13,7 @@ package pb
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -382,7 +383,15 @@ type Media struct {
 	// True for a push-to-talk voice note (should be "audio/ogg; codecs=opus"). Ignored for images.
 	VoiceNote bool `protobuf:"varint,4,opt,name=voice_note,json=voiceNote,proto3" json:"voice_note,omitempty"`
 	// Audio duration in seconds, if known. Ignored for images.
-	Seconds       uint32 `protobuf:"varint,5,opt,name=seconds,proto3" json:"seconds,omitempty"`
+	Seconds uint32 `protobuf:"varint,5,opt,name=seconds,proto3" json:"seconds,omitempty"`
+	// Size of data in bytes, as announced by the sender. Received messages only.
+	FileLength uint64 `protobuf:"varint,6,opt,name=file_length,json=fileLength,proto3" json:"file_length,omitempty"`
+	// SHA-256 of data, as announced by the sender (verified on download). Received messages only.
+	FileSha256 []byte `protobuf:"bytes,7,opt,name=file_sha256,json=fileSha256,proto3" json:"file_sha256,omitempty"`
+	// Image width in pixels (0 if unknown). Computed when sending JPEG/PNG images.
+	Width uint32 `protobuf:"varint,8,opt,name=width,proto3" json:"width,omitempty"`
+	// Image height in pixels (0 if unknown). Computed when sending JPEG/PNG images.
+	Height        uint32 `protobuf:"varint,9,opt,name=height,proto3" json:"height,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -448,6 +457,34 @@ func (x *Media) GetVoiceNote() bool {
 func (x *Media) GetSeconds() uint32 {
 	if x != nil {
 		return x.Seconds
+	}
+	return 0
+}
+
+func (x *Media) GetFileLength() uint64 {
+	if x != nil {
+		return x.FileLength
+	}
+	return 0
+}
+
+func (x *Media) GetFileSha256() []byte {
+	if x != nil {
+		return x.FileSha256
+	}
+	return nil
+}
+
+func (x *Media) GetWidth() uint32 {
+	if x != nil {
+		return x.Width
+	}
+	return 0
+}
+
+func (x *Media) GetHeight() uint32 {
+	if x != nil {
+		return x.Height
 	}
 	return 0
 }
@@ -579,8 +616,12 @@ type SendResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// WhatsApp message ID.
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	// Server timestamp, Unix seconds.
-	Timestamp     int64 `protobuf:"varint,2,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	// When WhatsApp accepted the message (server time).
+	SentAt *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=sent_at,json=sentAt,proto3" json:"sent_at,omitempty"`
+	// Phone number of the sending account.
+	From string `protobuf:"bytes,3,opt,name=from,proto3" json:"from,omitempty"`
+	// Phone number of the recipient.
+	To            string `protobuf:"bytes,4,opt,name=to,proto3" json:"to,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -622,11 +663,25 @@ func (x *SendResponse) GetId() string {
 	return ""
 }
 
-func (x *SendResponse) GetTimestamp() int64 {
+func (x *SendResponse) GetSentAt() *timestamppb.Timestamp {
 	if x != nil {
-		return x.Timestamp
+		return x.SentAt
 	}
-	return 0
+	return nil
+}
+
+func (x *SendResponse) GetFrom() string {
+	if x != nil {
+		return x.From
+	}
+	return ""
+}
+
+func (x *SendResponse) GetTo() string {
+	if x != nil {
+		return x.To
+	}
+	return ""
 }
 
 // SubscribeRequest selects which events to receive. Empty lists match everything.
@@ -780,17 +835,17 @@ func (*SubscribeResponse_Message) isSubscribeResponse_Event() {}
 
 func (*SubscribeResponse_AccountEvent) isSubscribeResponse_Event() {}
 
-// Message is an incoming one-to-one message.
+// Message is an incoming one-to-one message with everything needed to process it later.
 type Message struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// WhatsApp message ID.
+	// WhatsApp message ID (unique per chat; the same ID is reported by the sender's SendResponse).
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// Sender phone number, or "lid:<id>" when WhatsApp hides it and it cannot be resolved.
 	From string `protobuf:"bytes,2,opt,name=from,proto3" json:"from,omitempty"`
 	// Sender display name, if known.
 	PushName string `protobuf:"bytes,3,opt,name=push_name,json=pushName,proto3" json:"push_name,omitempty"`
-	// Send time, Unix seconds.
-	Timestamp int64 `protobuf:"varint,4,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	// When the sender sent the message (WhatsApp server time, second precision).
+	SentAt *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=sent_at,json=sentAt,proto3" json:"sent_at,omitempty"`
 	// True only for "message yourself" chat messages, delivered when WA_SELF_CHAT=1.
 	FromMe bool `protobuf:"varint,5,opt,name=from_me,json=fromMe,proto3" json:"from_me,omitempty"`
 	// Message content.
@@ -800,7 +855,25 @@ type Message struct {
 	//	*Message_Text
 	//	*Message_Image
 	//	*Message_Audio
-	Content       isMessage_Content `protobuf_oneof:"content"`
+	Content isMessage_Content `protobuf_oneof:"content"`
+	// Receiver phone number: the linked account that received the message.
+	To string `protobuf:"bytes,9,opt,name=to,proto3" json:"to,omitempty"`
+	// Sender's WhatsApp LID (privacy identifier), if known; stable even when the phone is hidden.
+	FromLid string `protobuf:"bytes,10,opt,name=from_lid,json=fromLid,proto3" json:"from_lid,omitempty"`
+	// Chat address as WhatsApp reports it, e.g. "34600111222@s.whatsapp.net" or "123@lid".
+	Chat string `protobuf:"bytes,11,opt,name=chat,proto3" json:"chat,omitempty"`
+	// When this gateway received and decrypted the message.
+	ReceivedAt *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=received_at,json=receivedAt,proto3" json:"received_at,omitempty"`
+	// ID of the message this one replies to (quotes), if any.
+	ReplyToId string `protobuf:"bytes,13,opt,name=reply_to_id,json=replyToId,proto3" json:"reply_to_id,omitempty"`
+	// True if the message was forwarded.
+	Forwarded bool `protobuf:"varint,14,opt,name=forwarded,proto3" json:"forwarded,omitempty"`
+	// True if sent in a chat with disappearing messages.
+	Ephemeral bool `protobuf:"varint,15,opt,name=ephemeral,proto3" json:"ephemeral,omitempty"`
+	// True if sent as "view once".
+	ViewOnce bool `protobuf:"varint,16,opt,name=view_once,json=viewOnce,proto3" json:"view_once,omitempty"`
+	// True if this is an edit of a previously sent message.
+	Edited        bool `protobuf:"varint,17,opt,name=edited,proto3" json:"edited,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -856,11 +929,11 @@ func (x *Message) GetPushName() string {
 	return ""
 }
 
-func (x *Message) GetTimestamp() int64 {
+func (x *Message) GetSentAt() *timestamppb.Timestamp {
 	if x != nil {
-		return x.Timestamp
+		return x.SentAt
 	}
-	return 0
+	return nil
 }
 
 func (x *Message) GetFromMe() bool {
@@ -902,6 +975,69 @@ func (x *Message) GetAudio() *Media {
 		}
 	}
 	return nil
+}
+
+func (x *Message) GetTo() string {
+	if x != nil {
+		return x.To
+	}
+	return ""
+}
+
+func (x *Message) GetFromLid() string {
+	if x != nil {
+		return x.FromLid
+	}
+	return ""
+}
+
+func (x *Message) GetChat() string {
+	if x != nil {
+		return x.Chat
+	}
+	return ""
+}
+
+func (x *Message) GetReceivedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.ReceivedAt
+	}
+	return nil
+}
+
+func (x *Message) GetReplyToId() string {
+	if x != nil {
+		return x.ReplyToId
+	}
+	return ""
+}
+
+func (x *Message) GetForwarded() bool {
+	if x != nil {
+		return x.Forwarded
+	}
+	return false
+}
+
+func (x *Message) GetEphemeral() bool {
+	if x != nil {
+		return x.Ephemeral
+	}
+	return false
+}
+
+func (x *Message) GetViewOnce() bool {
+	if x != nil {
+		return x.ViewOnce
+	}
+	return false
+}
+
+func (x *Message) GetEdited() bool {
+	if x != nil {
+		return x.Edited
+	}
+	return false
 }
 
 type isMessage_Content interface {
@@ -1030,7 +1166,7 @@ func (*StatusRequest) Descriptor() ([]byte, []int) {
 	return file_kapa_whatsapp_v1_whatsapp_proto_rawDescGZIP(), []int{13}
 }
 
-// StatusResponse describes the gateway.
+// StatusResponse describes the gateway and its traffic since it started.
 type StatusResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Version of the whatsmeow library compiled in.
@@ -1040,9 +1176,21 @@ type StatusResponse struct {
 	// True once WhatsApp has rejected the client as outdated.
 	Outdated bool `protobuf:"varint,3,opt,name=outdated,proto3" json:"outdated,omitempty"`
 	// All known accounts, sorted by phone number.
-	Accounts      []*Account `protobuf:"bytes,4,rep,name=accounts,proto3" json:"accounts,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Accounts []*Account `protobuf:"bytes,4,rep,name=accounts,proto3" json:"accounts,omitempty"`
+	// When the gateway process started.
+	StartedAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	// Number of open Subscribe streams.
+	Subscribers uint32 `protobuf:"varint,6,opt,name=subscribers,proto3" json:"subscribers,omitempty"`
+	// One-to-one messages received from WhatsApp (any type; groups, status updates and channels excluded).
+	MessagesReceived uint64 `protobuf:"varint,7,opt,name=messages_received,json=messagesReceived,proto3" json:"messages_received,omitempty"`
+	// Message events handed to subscribers (one per subscriber and message).
+	MessagesDelivered uint64 `protobuf:"varint,8,opt,name=messages_delivered,json=messagesDelivered,proto3" json:"messages_delivered,omitempty"`
+	// Messages sent with Send.
+	MessagesSent uint64 `protobuf:"varint,9,opt,name=messages_sent,json=messagesSent,proto3" json:"messages_sent,omitempty"`
+	// Subscribers disconnected for falling behind.
+	SubscribersDropped uint64 `protobuf:"varint,10,opt,name=subscribers_dropped,json=subscribersDropped,proto3" json:"subscribers_dropped,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *StatusResponse) Reset() {
@@ -1103,13 +1251,57 @@ func (x *StatusResponse) GetAccounts() []*Account {
 	return nil
 }
 
+func (x *StatusResponse) GetStartedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.StartedAt
+	}
+	return nil
+}
+
+func (x *StatusResponse) GetSubscribers() uint32 {
+	if x != nil {
+		return x.Subscribers
+	}
+	return 0
+}
+
+func (x *StatusResponse) GetMessagesReceived() uint64 {
+	if x != nil {
+		return x.MessagesReceived
+	}
+	return 0
+}
+
+func (x *StatusResponse) GetMessagesDelivered() uint64 {
+	if x != nil {
+		return x.MessagesDelivered
+	}
+	return 0
+}
+
+func (x *StatusResponse) GetMessagesSent() uint64 {
+	if x != nil {
+		return x.MessagesSent
+	}
+	return 0
+}
+
+func (x *StatusResponse) GetSubscribersDropped() uint64 {
+	if x != nil {
+		return x.SubscribersDropped
+	}
+	return 0
+}
+
 // Account is one known account.
 type Account struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Phone number.
 	Phone string `protobuf:"bytes,1,opt,name=phone,proto3" json:"phone,omitempty"`
 	// Current state.
-	State         AccountState `protobuf:"varint,2,opt,name=state,proto3,enum=kapa.whatsapp.v1.AccountState" json:"state,omitempty"`
+	State AccountState `protobuf:"varint,2,opt,name=state,proto3,enum=kapa.whatsapp.v1.AccountState" json:"state,omitempty"`
+	// The account's own WhatsApp LID, once linked.
+	Lid           string `protobuf:"bytes,3,opt,name=lid,proto3" json:"lid,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1158,11 +1350,18 @@ func (x *Account) GetState() AccountState {
 	return AccountState_ACCOUNT_STATE_UNSPECIFIED
 }
 
+func (x *Account) GetLid() string {
+	if x != nil {
+		return x.Lid
+	}
+	return ""
+}
+
 var File_kapa_whatsapp_v1_whatsapp_proto protoreflect.FileDescriptor
 
 const file_kapa_whatsapp_v1_whatsapp_proto_rawDesc = "" +
 	"\n" +
-	"\x1fkapa/whatsapp/v1/whatsapp.proto\x12\x10kapa.whatsapp.v1\"$\n" +
+	"\x1fkapa/whatsapp/v1/whatsapp.proto\x12\x10kapa.whatsapp.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"$\n" +
 	"\fLoginRequest\x12\x14\n" +
 	"\x05phone\x18\x01 \x01(\tR\x05phone\"h\n" +
 	"\rLoginResponse\x12!\n" +
@@ -1173,24 +1372,32 @@ const file_kapa_whatsapp_v1_whatsapp_proto_rawDesc = "" +
 	"\x0eLogoutResponse\"%\n" +
 	"\rDeleteRequest\x12\x14\n" +
 	"\x05phone\x18\x01 \x01(\tR\x05phone\"\x10\n" +
-	"\x0eDeleteResponse\"\x8b\x01\n" +
+	"\x0eDeleteResponse\"\xfb\x01\n" +
 	"\x05Media\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data\x12\x1b\n" +
 	"\tmime_type\x18\x02 \x01(\tR\bmimeType\x12\x18\n" +
 	"\acaption\x18\x03 \x01(\tR\acaption\x12\x1d\n" +
 	"\n" +
 	"voice_note\x18\x04 \x01(\bR\tvoiceNote\x12\x18\n" +
-	"\aseconds\x18\x05 \x01(\rR\aseconds\"\xba\x01\n" +
+	"\aseconds\x18\x05 \x01(\rR\aseconds\x12\x1f\n" +
+	"\vfile_length\x18\x06 \x01(\x04R\n" +
+	"fileLength\x12\x1f\n" +
+	"\vfile_sha256\x18\a \x01(\fR\n" +
+	"fileSha256\x12\x14\n" +
+	"\x05width\x18\b \x01(\rR\x05width\x12\x16\n" +
+	"\x06height\x18\t \x01(\rR\x06height\"\xba\x01\n" +
 	"\vSendRequest\x12\x18\n" +
 	"\aaccount\x18\x01 \x01(\tR\aaccount\x12\x0e\n" +
 	"\x02to\x18\x02 \x01(\tR\x02to\x12\x14\n" +
 	"\x04text\x18\x03 \x01(\tH\x00R\x04text\x12/\n" +
 	"\x05image\x18\x04 \x01(\v2\x17.kapa.whatsapp.v1.MediaH\x00R\x05image\x12/\n" +
 	"\x05audio\x18\x05 \x01(\v2\x17.kapa.whatsapp.v1.MediaH\x00R\x05audioB\t\n" +
-	"\acontent\"<\n" +
+	"\acontent\"w\n" +
 	"\fSendResponse\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1c\n" +
-	"\ttimestamp\x18\x02 \x01(\x03R\ttimestamp\"D\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x123\n" +
+	"\asent_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x06sentAt\x12\x12\n" +
+	"\x04from\x18\x03 \x01(\tR\x04from\x12\x0e\n" +
+	"\x02to\x18\x04 \x01(\tR\x02to\"D\n" +
 	"\x10SubscribeRequest\x12\x1a\n" +
 	"\baccounts\x18\x01 \x03(\tR\baccounts\x12\x14\n" +
 	"\x05peers\x18\x02 \x03(\tR\x05peers\"\xb4\x01\n" +
@@ -1198,31 +1405,51 @@ const file_kapa_whatsapp_v1_whatsapp_proto_rawDesc = "" +
 	"\aaccount\x18\x01 \x01(\tR\aaccount\x125\n" +
 	"\amessage\x18\x02 \x01(\v2\x19.kapa.whatsapp.v1.MessageH\x00R\amessage\x12E\n" +
 	"\raccount_event\x18\x03 \x01(\v2\x1e.kapa.whatsapp.v1.AccountEventH\x00R\faccountEventB\a\n" +
-	"\x05event\"\x84\x02\n" +
+	"\x05event\"\xa8\x04\n" +
 	"\aMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04from\x18\x02 \x01(\tR\x04from\x12\x1b\n" +
-	"\tpush_name\x18\x03 \x01(\tR\bpushName\x12\x1c\n" +
-	"\ttimestamp\x18\x04 \x01(\x03R\ttimestamp\x12\x17\n" +
+	"\tpush_name\x18\x03 \x01(\tR\bpushName\x123\n" +
+	"\asent_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x06sentAt\x12\x17\n" +
 	"\afrom_me\x18\x05 \x01(\bR\x06fromMe\x12\x14\n" +
 	"\x04text\x18\x06 \x01(\tH\x00R\x04text\x12/\n" +
 	"\x05image\x18\a \x01(\v2\x17.kapa.whatsapp.v1.MediaH\x00R\x05image\x12/\n" +
-	"\x05audio\x18\b \x01(\v2\x17.kapa.whatsapp.v1.MediaH\x00R\x05audioB\t\n" +
+	"\x05audio\x18\b \x01(\v2\x17.kapa.whatsapp.v1.MediaH\x00R\x05audio\x12\x0e\n" +
+	"\x02to\x18\t \x01(\tR\x02to\x12\x19\n" +
+	"\bfrom_lid\x18\n" +
+	" \x01(\tR\afromLid\x12\x12\n" +
+	"\x04chat\x18\v \x01(\tR\x04chat\x12;\n" +
+	"\vreceived_at\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"receivedAt\x12\x1e\n" +
+	"\vreply_to_id\x18\r \x01(\tR\treplyToId\x12\x1c\n" +
+	"\tforwarded\x18\x0e \x01(\bR\tforwarded\x12\x1c\n" +
+	"\tephemeral\x18\x0f \x01(\bR\tephemeral\x12\x1b\n" +
+	"\tview_once\x18\x10 \x01(\bR\bviewOnce\x12\x16\n" +
+	"\x06edited\x18\x11 \x01(\bR\x06editedB\t\n" +
 	"\acontent\"\x7f\n" +
 	"\fAccountEvent\x124\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x1e.kapa.whatsapp.v1.AccountStateR\x05state\x12\x16\n" +
 	"\x06detail\x18\x02 \x01(\tR\x06detail\x12!\n" +
 	"\fpairing_code\x18\x03 \x01(\tR\vpairingCode\"\x0f\n" +
-	"\rStatusRequest\"\xaf\x01\n" +
+	"\rStatusRequest\"\xbe\x03\n" +
 	"\x0eStatusResponse\x12+\n" +
 	"\x11whatsmeow_version\x18\x01 \x01(\tR\x10whatsmeowVersion\x12\x1d\n" +
 	"\n" +
 	"wa_version\x18\x02 \x01(\tR\twaVersion\x12\x1a\n" +
 	"\boutdated\x18\x03 \x01(\bR\boutdated\x125\n" +
-	"\baccounts\x18\x04 \x03(\v2\x19.kapa.whatsapp.v1.AccountR\baccounts\"U\n" +
+	"\baccounts\x18\x04 \x03(\v2\x19.kapa.whatsapp.v1.AccountR\baccounts\x129\n" +
+	"\n" +
+	"started_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12 \n" +
+	"\vsubscribers\x18\x06 \x01(\rR\vsubscribers\x12+\n" +
+	"\x11messages_received\x18\a \x01(\x04R\x10messagesReceived\x12-\n" +
+	"\x12messages_delivered\x18\b \x01(\x04R\x11messagesDelivered\x12#\n" +
+	"\rmessages_sent\x18\t \x01(\x04R\fmessagesSent\x12/\n" +
+	"\x13subscribers_dropped\x18\n" +
+	" \x01(\x04R\x12subscribersDropped\"g\n" +
 	"\aAccount\x12\x14\n" +
 	"\x05phone\x18\x01 \x01(\tR\x05phone\x124\n" +
-	"\x05state\x18\x02 \x01(\x0e2\x1e.kapa.whatsapp.v1.AccountStateR\x05state*\x93\x02\n" +
+	"\x05state\x18\x02 \x01(\x0e2\x1e.kapa.whatsapp.v1.AccountStateR\x05state\x12\x10\n" +
+	"\x03lid\x18\x03 \x01(\tR\x03lid*\x93\x02\n" +
 	"\fAccountState\x12\x1d\n" +
 	"\x19ACCOUNT_STATE_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15ACCOUNT_STATE_PAIRING\x10\x01\x12\x1b\n" +
@@ -1256,52 +1483,57 @@ func file_kapa_whatsapp_v1_whatsapp_proto_rawDescGZIP() []byte {
 var file_kapa_whatsapp_v1_whatsapp_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_kapa_whatsapp_v1_whatsapp_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_kapa_whatsapp_v1_whatsapp_proto_goTypes = []any{
-	(AccountState)(0),         // 0: kapa.whatsapp.v1.AccountState
-	(*LoginRequest)(nil),      // 1: kapa.whatsapp.v1.LoginRequest
-	(*LoginResponse)(nil),     // 2: kapa.whatsapp.v1.LoginResponse
-	(*LogoutRequest)(nil),     // 3: kapa.whatsapp.v1.LogoutRequest
-	(*LogoutResponse)(nil),    // 4: kapa.whatsapp.v1.LogoutResponse
-	(*DeleteRequest)(nil),     // 5: kapa.whatsapp.v1.DeleteRequest
-	(*DeleteResponse)(nil),    // 6: kapa.whatsapp.v1.DeleteResponse
-	(*Media)(nil),             // 7: kapa.whatsapp.v1.Media
-	(*SendRequest)(nil),       // 8: kapa.whatsapp.v1.SendRequest
-	(*SendResponse)(nil),      // 9: kapa.whatsapp.v1.SendResponse
-	(*SubscribeRequest)(nil),  // 10: kapa.whatsapp.v1.SubscribeRequest
-	(*SubscribeResponse)(nil), // 11: kapa.whatsapp.v1.SubscribeResponse
-	(*Message)(nil),           // 12: kapa.whatsapp.v1.Message
-	(*AccountEvent)(nil),      // 13: kapa.whatsapp.v1.AccountEvent
-	(*StatusRequest)(nil),     // 14: kapa.whatsapp.v1.StatusRequest
-	(*StatusResponse)(nil),    // 15: kapa.whatsapp.v1.StatusResponse
-	(*Account)(nil),           // 16: kapa.whatsapp.v1.Account
+	(AccountState)(0),             // 0: kapa.whatsapp.v1.AccountState
+	(*LoginRequest)(nil),          // 1: kapa.whatsapp.v1.LoginRequest
+	(*LoginResponse)(nil),         // 2: kapa.whatsapp.v1.LoginResponse
+	(*LogoutRequest)(nil),         // 3: kapa.whatsapp.v1.LogoutRequest
+	(*LogoutResponse)(nil),        // 4: kapa.whatsapp.v1.LogoutResponse
+	(*DeleteRequest)(nil),         // 5: kapa.whatsapp.v1.DeleteRequest
+	(*DeleteResponse)(nil),        // 6: kapa.whatsapp.v1.DeleteResponse
+	(*Media)(nil),                 // 7: kapa.whatsapp.v1.Media
+	(*SendRequest)(nil),           // 8: kapa.whatsapp.v1.SendRequest
+	(*SendResponse)(nil),          // 9: kapa.whatsapp.v1.SendResponse
+	(*SubscribeRequest)(nil),      // 10: kapa.whatsapp.v1.SubscribeRequest
+	(*SubscribeResponse)(nil),     // 11: kapa.whatsapp.v1.SubscribeResponse
+	(*Message)(nil),               // 12: kapa.whatsapp.v1.Message
+	(*AccountEvent)(nil),          // 13: kapa.whatsapp.v1.AccountEvent
+	(*StatusRequest)(nil),         // 14: kapa.whatsapp.v1.StatusRequest
+	(*StatusResponse)(nil),        // 15: kapa.whatsapp.v1.StatusResponse
+	(*Account)(nil),               // 16: kapa.whatsapp.v1.Account
+	(*timestamppb.Timestamp)(nil), // 17: google.protobuf.Timestamp
 }
 var file_kapa_whatsapp_v1_whatsapp_proto_depIdxs = []int32{
 	0,  // 0: kapa.whatsapp.v1.LoginResponse.state:type_name -> kapa.whatsapp.v1.AccountState
 	7,  // 1: kapa.whatsapp.v1.SendRequest.image:type_name -> kapa.whatsapp.v1.Media
 	7,  // 2: kapa.whatsapp.v1.SendRequest.audio:type_name -> kapa.whatsapp.v1.Media
-	12, // 3: kapa.whatsapp.v1.SubscribeResponse.message:type_name -> kapa.whatsapp.v1.Message
-	13, // 4: kapa.whatsapp.v1.SubscribeResponse.account_event:type_name -> kapa.whatsapp.v1.AccountEvent
-	7,  // 5: kapa.whatsapp.v1.Message.image:type_name -> kapa.whatsapp.v1.Media
-	7,  // 6: kapa.whatsapp.v1.Message.audio:type_name -> kapa.whatsapp.v1.Media
-	0,  // 7: kapa.whatsapp.v1.AccountEvent.state:type_name -> kapa.whatsapp.v1.AccountState
-	16, // 8: kapa.whatsapp.v1.StatusResponse.accounts:type_name -> kapa.whatsapp.v1.Account
-	0,  // 9: kapa.whatsapp.v1.Account.state:type_name -> kapa.whatsapp.v1.AccountState
-	1,  // 10: kapa.whatsapp.v1.WhatsAppService.Login:input_type -> kapa.whatsapp.v1.LoginRequest
-	3,  // 11: kapa.whatsapp.v1.WhatsAppService.Logout:input_type -> kapa.whatsapp.v1.LogoutRequest
-	5,  // 12: kapa.whatsapp.v1.WhatsAppService.Delete:input_type -> kapa.whatsapp.v1.DeleteRequest
-	8,  // 13: kapa.whatsapp.v1.WhatsAppService.Send:input_type -> kapa.whatsapp.v1.SendRequest
-	10, // 14: kapa.whatsapp.v1.WhatsAppService.Subscribe:input_type -> kapa.whatsapp.v1.SubscribeRequest
-	14, // 15: kapa.whatsapp.v1.WhatsAppService.Status:input_type -> kapa.whatsapp.v1.StatusRequest
-	2,  // 16: kapa.whatsapp.v1.WhatsAppService.Login:output_type -> kapa.whatsapp.v1.LoginResponse
-	4,  // 17: kapa.whatsapp.v1.WhatsAppService.Logout:output_type -> kapa.whatsapp.v1.LogoutResponse
-	6,  // 18: kapa.whatsapp.v1.WhatsAppService.Delete:output_type -> kapa.whatsapp.v1.DeleteResponse
-	9,  // 19: kapa.whatsapp.v1.WhatsAppService.Send:output_type -> kapa.whatsapp.v1.SendResponse
-	11, // 20: kapa.whatsapp.v1.WhatsAppService.Subscribe:output_type -> kapa.whatsapp.v1.SubscribeResponse
-	15, // 21: kapa.whatsapp.v1.WhatsAppService.Status:output_type -> kapa.whatsapp.v1.StatusResponse
-	16, // [16:22] is the sub-list for method output_type
-	10, // [10:16] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	17, // 3: kapa.whatsapp.v1.SendResponse.sent_at:type_name -> google.protobuf.Timestamp
+	12, // 4: kapa.whatsapp.v1.SubscribeResponse.message:type_name -> kapa.whatsapp.v1.Message
+	13, // 5: kapa.whatsapp.v1.SubscribeResponse.account_event:type_name -> kapa.whatsapp.v1.AccountEvent
+	17, // 6: kapa.whatsapp.v1.Message.sent_at:type_name -> google.protobuf.Timestamp
+	7,  // 7: kapa.whatsapp.v1.Message.image:type_name -> kapa.whatsapp.v1.Media
+	7,  // 8: kapa.whatsapp.v1.Message.audio:type_name -> kapa.whatsapp.v1.Media
+	17, // 9: kapa.whatsapp.v1.Message.received_at:type_name -> google.protobuf.Timestamp
+	0,  // 10: kapa.whatsapp.v1.AccountEvent.state:type_name -> kapa.whatsapp.v1.AccountState
+	16, // 11: kapa.whatsapp.v1.StatusResponse.accounts:type_name -> kapa.whatsapp.v1.Account
+	17, // 12: kapa.whatsapp.v1.StatusResponse.started_at:type_name -> google.protobuf.Timestamp
+	0,  // 13: kapa.whatsapp.v1.Account.state:type_name -> kapa.whatsapp.v1.AccountState
+	1,  // 14: kapa.whatsapp.v1.WhatsAppService.Login:input_type -> kapa.whatsapp.v1.LoginRequest
+	3,  // 15: kapa.whatsapp.v1.WhatsAppService.Logout:input_type -> kapa.whatsapp.v1.LogoutRequest
+	5,  // 16: kapa.whatsapp.v1.WhatsAppService.Delete:input_type -> kapa.whatsapp.v1.DeleteRequest
+	8,  // 17: kapa.whatsapp.v1.WhatsAppService.Send:input_type -> kapa.whatsapp.v1.SendRequest
+	10, // 18: kapa.whatsapp.v1.WhatsAppService.Subscribe:input_type -> kapa.whatsapp.v1.SubscribeRequest
+	14, // 19: kapa.whatsapp.v1.WhatsAppService.Status:input_type -> kapa.whatsapp.v1.StatusRequest
+	2,  // 20: kapa.whatsapp.v1.WhatsAppService.Login:output_type -> kapa.whatsapp.v1.LoginResponse
+	4,  // 21: kapa.whatsapp.v1.WhatsAppService.Logout:output_type -> kapa.whatsapp.v1.LogoutResponse
+	6,  // 22: kapa.whatsapp.v1.WhatsAppService.Delete:output_type -> kapa.whatsapp.v1.DeleteResponse
+	9,  // 23: kapa.whatsapp.v1.WhatsAppService.Send:output_type -> kapa.whatsapp.v1.SendResponse
+	11, // 24: kapa.whatsapp.v1.WhatsAppService.Subscribe:output_type -> kapa.whatsapp.v1.SubscribeResponse
+	15, // 25: kapa.whatsapp.v1.WhatsAppService.Status:output_type -> kapa.whatsapp.v1.StatusResponse
+	20, // [20:26] is the sub-list for method output_type
+	14, // [14:20] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_kapa_whatsapp_v1_whatsapp_proto_init() }
