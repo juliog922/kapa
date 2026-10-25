@@ -1,9 +1,10 @@
-//! Gmail accounts: one watcher task per account (IMAP IDLE, reconnect with backoff) that
-//! publishes allowed messages on an in-process bus and stores them; sending from any account.
+//! Gmail accounts: one watcher task per account (IMAP IDLE with a 15 s safety poll, reconnect
+//! with backoff) that publishes allowed messages on an in-process bus and stores them; sending
+//! from any account.
 //! Allowlists are deny by default, stored in PostgreSQL and checked in memory.
 
 use crate::config::{Accounts, Credentials, Server};
-use crate::imap::{self, IDLE_RENEW, Imap};
+use crate::imap::{self, IDLE_POLL, Imap};
 use crate::mail::{self, Email, Outgoing};
 use crate::{Error, Result, log, store::Store};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -164,7 +165,7 @@ impl Inner {
                 self.process(&creds.address, f).await?;
             }
             self.store.set_cursor(&creds.address, validity, last).await?;
-            session.idle(IDLE_RENEW).await?;
+            session.idle(IDLE_POLL).await?; // returns early on a push; else polls
         }
     }
 }

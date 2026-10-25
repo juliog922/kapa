@@ -154,7 +154,7 @@ pub fn encode_header(value: &str) -> String {
 }
 
 /// Converts days since 1970-01-01 to (year, month, day) (proleptic Gregorian).
-fn civil(days: i64) -> (i64, usize, i64) {
+pub(crate) fn civil(days: i64) -> (i64, usize, i64) {
     let z = days + 719_468;
     let (era, doe) = (z.div_euclid(146_097), z.rem_euclid(146_097));
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
@@ -166,7 +166,7 @@ fn civil(days: i64) -> (i64, usize, i64) {
 }
 
 /// Converts (year, month 1-12, day) to days since 1970-01-01 (inverse of [`civil`]).
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+pub(crate) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let y = if month <= 2 { year - 1 } else { year };
     let (era, yoe) = (y.div_euclid(400), y.rem_euclid(400));
     let mp = if month > 2 { month - 3 } else { month + 9 };

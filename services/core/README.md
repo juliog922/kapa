@@ -41,11 +41,18 @@ Settings in `secrets/sqlserver.{dev,prod}.env` (template `sqlserver.example.env`
 `SQLSERVER_HOST`, `_PORT` (1433), `_DB`, `_USER`, `_PASSWORD` (quotes allowed),
 `_ENCRYPT` = `required` (default) | `login` | `none`, `_TRUST_CERT` (default `true`).
 
+The SQL Server is only reachable from prike, so its **live** checks run there, inside the
+deployed core container (the same binary that will query Sage), driven from OMEN16:
+
 ```bash
-make deploy-check-sqlserver                      # from OMEN16: runs the check on prike (core container)
-make -C services/core sqlserver-check            # where the server is reachable, with sqlserver.dev.env
-SQLSERVER_LIVE=1 make -C services/core test      # also run the live SQL Server test (reachable only)
+make deploy-check-sqlserver     # live: read-only login audit + schema check (exit 0 = all good)
+make deploy-sync-sqlserver      # live check, then export schema + masked sample (fixture)
 ```
+
+Everything else is tested **offline** on that fixture (`tests/sage_fixture.rs`, part of
+`make -C services/core test`): every column core relies on exists with a compatible type, the
+sample is coherent (every line's order, every order's client and every referenced article are
+present), and personal data is masked. Without the fixture (CI, fresh clone) they skip loudly.
 
 The check connects, prints the server version, database and login, then verifies every table
 and column core relies on (`Clientes`, `Articulos`, `CabeceraPedidoCliente`,
@@ -55,6 +62,26 @@ could write. Exit 0 when everything core needs is there.
 
 If the server only speaks TLS 1.0/1.1 (old SQL Server versions), the login fails with a TLS
 error: set `SQLSERVER_ENCRYPT=none` (no TLS; acceptable only inside the LAN/VPN).
+
+## Sage sample data (tests and development)
+
+```bash
+make deploy-sync-sqlserver                       # 10 latest orders (SAMPLE_ORDERS=50 for more)
+```
+
+Runs `core --sample-sqlserver` on prike and saves `services/core/testdata/sage.local.json`
+(**gitignored**). It contains:
+
+- `schema`: every column of `Clientes`, `Articulos`, `CabeceraPedidoCliente` and
+  `LineasPedidoCliente` (type, length, precision, nullability) and approximate row counts;
+- `sample`: a **coherent** batch: the latest orders, their lines, their clients and the articles
+  they reference, plus the newest sellable catalog articles (`K_BOT = -1`). Only the columns core
+  maps are exported, so unrelated sensitive data (bank details…) never leaves Sage.
+
+Personal data (`Nombre`, phones, e-mails, `Domicilio`, `CifDni`, `RazonSocial`) is **masked by
+default**, deterministically (same input, same mask: joins still work; digits stay digits,
+e-mail domains become `example.com`). `SAMPLE_RAW=1` keeps it real and asks for confirmation.
+Reads use `NOLOCK`, so sampling never blocks Sage users; every query passes the read-only guard.
 
 ## Secrets
 

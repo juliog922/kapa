@@ -760,6 +760,7 @@ version = "0.1.0"
 dependencies = [
  "mail-parser",
  "ring",
+ "serde_json",
  "sqlx",
  "tiberius",
  "tokio",

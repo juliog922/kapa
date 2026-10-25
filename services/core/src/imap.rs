@@ -7,8 +7,11 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsConnector, client::TlsStream, rustls};
 
-/// Gmail closes IDLE after about 29 minutes; re-issue it before that.
-pub const IDLE_RENEW: Duration = Duration::from_mins(25);
+/// Longest wait in one IDLE before leaving it to fetch anyway. Gmail's IDLE push is
+/// best-effort: it was measured arriving ~29 s late, and sometimes not at all. Leaving IDLE
+/// and fetching makes the server report pending changes, so a missed push costs at most
+/// this long (well under Gmail's ~29 min IDLE limit). Cost: one small round trip.
+pub const IDLE_POLL: Duration = Duration::from_secs(15);
 
 /// One untagged response line with its literals (`{n}` blocks) in order.
 #[derive(Debug, Default, PartialEq, Eq)]

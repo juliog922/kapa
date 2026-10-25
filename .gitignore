@@ -24,3 +24,5 @@ services/whatsapp/whatsapp
 services/*/secrets/*
 !services/*/secrets/*.example.env
 services/*/target/
+# Local test data exported from production systems (may contain personal data)
+services/*/testdata/*.local.*

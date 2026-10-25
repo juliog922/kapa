@@ -1,6 +1,6 @@
 //! `core`: runs the Kapa core service, or `core --healthcheck` / `core --status` for probes.
 
-use kapa_core::{Result, config, gmail::Gmail, log, now_ms, sqlserver, status, store::Store};
+use kapa_core::{Result, config, gmail::Gmail, log, now_ms, sample, sqlserver, status, store::Store};
 use std::{path::PathBuf, process::ExitCode, time::Duration};
 
 /// Environment variable `key`, or `default`.
@@ -31,6 +31,30 @@ async fn check_sqlserver() -> ExitCode {
         }
         Err(e) => {
             println!("✘ SQL Server check failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `core --sample-sqlserver`: prints the Sage schema and a coherent sample as JSON on stdout
+/// (summary on stderr). `SAMPLE_ORDERS` (default 10, max 200) orders; `SAMPLE_RAW=1` disables
+/// the masking of personal data.
+async fn sample_sqlserver() -> ExitCode {
+    let path = env("SQLSERVER_FILE", "/run/secrets/core/sqlserver.env");
+    let orders = env("SAMPLE_ORDERS", "10").parse::<i32>().unwrap_or(10).clamp(1, 200);
+    let mask = env("SAMPLE_RAW", "0") != "1";
+    let result = async {
+        let text = read_optional(&path)?.ok_or_else(|| kapa_core::Error::Invalid(format!("{path} not found")))?;
+        Box::pin(sample::export(&sqlserver::parse_config(&text)?, orders, mask)).await
+    };
+    match result.await {
+        Ok((json, summary)) => {
+            print!("{json}");
+            eprintln!("sample: {summary} · personal data {}", if mask { "masked" } else { "RAW (not masked)" });
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("✘ SQL Server sample failed: {e}");
             ExitCode::FAILURE
         }
     }
@@ -71,6 +95,7 @@ async fn main() -> ExitCode {
     match std::env::args().nth(1).as_deref() {
         Some("--healthcheck") => return ExitCode::from(u8::from(status::read(&status_path, status::MAX_AGE).1 == 1)),
         Some("--check-sqlserver") => return check_sqlserver().await,
+        Some("--sample-sqlserver") => return sample_sqlserver().await,
         Some("--status") => {
             let (report, code) = status::read(&status_path, status::MAX_AGE);
             print!("{report}");

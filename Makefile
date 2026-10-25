@@ -70,7 +70,7 @@ endef
 
 .PHONY: help run stop clean format lint check-docs test test-infra test-clean bench deps \
         update-whatsmeow pair-test \
-        deploy deploy-secrets deploy-check-sqlserver deploy-stop deploy-clean deploy-logs deploy-logs-ui deploy-env deploy-setup monitor \
+        deploy deploy-secrets deploy-check-sqlserver deploy-sample-sqlserver deploy-sync-sqlserver deploy-stop deploy-clean deploy-logs deploy-logs-ui deploy-env deploy-setup monitor \
         runner runner-start runner-stop runner-status runner-logs \
         check-env check-docker
 
@@ -172,6 +172,12 @@ deploy-clean: ## DESTRUCTIVE: remove services, images AND data volumes on the ho
 
 deploy-check-sqlserver: ## Check the Sage SQL Server from the host: read-only login + schema
 	@bash scripts/deploy-check-sqlserver.sh
+
+deploy-sync-sqlserver: ## Live Sage check on the host, then export schema + masked sample to services/core/testdata
+	@bash scripts/deploy-check-sqlserver.sh && bash scripts/deploy-sample-sqlserver.sh
+
+deploy-sample-sqlserver: ## Sage schema + masked sample -> services/core/testdata/sage.local.json
+	@bash scripts/deploy-sample-sqlserver.sh
 
 deploy-secrets: ## Upload services/*/secrets/*.prod.env to the host (asks for sudo there)
 	@bash scripts/deploy-secrets.sh

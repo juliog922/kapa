@@ -8,6 +8,7 @@ pub mod config;
 pub mod gmail;
 pub mod imap;
 pub mod mail;
+pub mod sample;
 pub mod smtp;
 pub mod sqlserver;
 pub mod status;
@@ -31,7 +32,7 @@ pub enum Error {
 }
 
 impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::Io(e) => write!(f, "i/o: {e}"),
             Self::Server(m) => write!(f, "server: {m}"),
