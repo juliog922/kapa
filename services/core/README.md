@@ -63,6 +63,26 @@ could write. Exit 0 when everything core needs is there.
 If the server only speaks TLS 1.0/1.1 (old SQL Server versions), the login fails with a TLS
 error: set `SQLSERVER_ENCRYPT=none` (no TLS; acceptable only inside the LAN/VPN).
 
+## Sage models (`src/sage.rs`)
+
+Read-only models of the four Sage tables: `Client`, `Article`, `OrderHeader`, `OrderLine`,
+keyed by `ClientKey`, `ArticleKey` and `OrderKey`. Shaped by the real data:
+
+- every key carries the company (`CodigoEmpresa`): Sage keeps several companies (1, 2, 212,
+  7777…) in the same tables;
+- text is trimmed and optional fields map `''` to `None` (columns are `NOT NULL` but often
+  empty or padded);
+- `decimal(28,10)` amounts are exact `Decimal`s (never floats; negative on returns and credits);
+  dates are `Date`s (Sage stores them at midnight);
+- `Article::is_sellable()` is `es_vendible` from the chatlink models: `K_BOT = -1`, not
+  `MERCH`, a description free of non-product words. `K_BOT` alone is not enough (in the real
+  sample, 4 of 10 `K_BOT = -1` articles are sellable); `Article::ean()` returns the EAN only when
+  `CodigoAlternativo` really is one.
+
+Models decode from any `Record`: the SQL Server row in production, the fixture's JSON in tests,
+so `make -C services/core test` decodes every real sample row through the same code. A missing
+column, a `NULL` in a `NOT NULL` column or an unexpected type is an error, never a silent default.
+
 ## Sage sample data (tests and development)
 
 ```bash

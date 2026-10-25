@@ -80,9 +80,9 @@ pub const FORMAT: u32 = 2;
 pub const PERSONAL: [&str; 9] = ["Nombre", "Telefono", "Telefono2", "Telefono3", "EMail1", "EMail2", "Domicilio", "CifDni", "RazonSocial"];
 
 /// Days from 1900-01-01 (SQL Server `datetime` epoch) to 1970-01-01.
-const DAYS_1900: i64 = -25_567;
+pub(crate) const DAYS_1900: i64 = -25_567;
 /// Days from 0001-01-01 (`date` / `datetime2` epoch) to 1970-01-01.
-const DAYS_0001: i64 = -719_162;
+pub(crate) const DAYS_0001: i64 = -719_162;
 
 /// A JSON string literal.
 #[must_use]

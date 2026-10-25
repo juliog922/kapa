@@ -8,6 +8,7 @@ pub mod config;
 pub mod gmail;
 pub mod imap;
 pub mod mail;
+pub mod sage;
 pub mod sample;
 pub mod smtp;
 pub mod sqlserver;
