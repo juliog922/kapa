@@ -1,6 +1,6 @@
 //! `core`: runs the Kapa core service, or `core --healthcheck` / `core --status` for probes.
 
-use kapa_core::{Result, config, gmail::Gmail, log, now_ms, status, store::Store};
+use kapa_core::{Result, config, gmail::Gmail, log, now_ms, sqlserver, status, store::Store};
 use std::{path::PathBuf, process::ExitCode, time::Duration};
 
 /// Environment variable `key`, or `default`.
@@ -14,6 +14,25 @@ fn read_optional(path: &str) -> Result<Option<String>> {
         Ok(text) => Ok(Some(text)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),
+    }
+}
+
+/// `core --check-sqlserver`: connects to the Sage SQL Server and checks the schema core uses.
+async fn check_sqlserver() -> ExitCode {
+    let path = env("SQLSERVER_FILE", "/run/secrets/core/sqlserver.env");
+    let result = async {
+        let text = read_optional(&path)?.ok_or_else(|| kapa_core::Error::Invalid(format!("{path} not found")))?;
+        Box::pin(sqlserver::check(&sqlserver::parse_config(&text)?)).await
+    };
+    match result.await {
+        Ok((report, ok)) => {
+            print!("{report}");
+            ExitCode::from(u8::from(!ok))
+        }
+        Err(e) => {
+            println!("✘ SQL Server check failed: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -51,6 +70,7 @@ async fn main() -> ExitCode {
     let status_path = PathBuf::from(env("STATUS_FILE", "/tmp/core.status"));
     match std::env::args().nth(1).as_deref() {
         Some("--healthcheck") => return ExitCode::from(u8::from(status::read(&status_path, status::MAX_AGE).1 == 1)),
+        Some("--check-sqlserver") => return check_sqlserver().await,
         Some("--status") => {
             let (report, code) = status::read(&status_path, status::MAX_AGE);
             print!("{report}");

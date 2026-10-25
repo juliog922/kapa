@@ -27,8 +27,10 @@ panic = "abort"
 mail-parser = { version = "1.0.0", default-features = false }
 ring = "0.17.14"
 sqlx = { version = "0.9.0", default-features = false, features = ["postgres", "runtime-tokio"] }
+tiberius = { version = "0.13.0", default-features = false, features = ["tds73", "rustls"] }
 tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal", "fs"] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+tokio-util = { version = "0.7.20", default-features = false, features = ["compat"] }
 webpki-roots = "1.0.11"
 
 [lints.rust]

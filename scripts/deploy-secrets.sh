@@ -34,11 +34,16 @@ for f in "${files[@]}"; do
   remote "umask 077 && cat > $(q "$stage/${f//\//__}")" < "$ROOT/$f"
 done
 
-install_cmd="set -e"
+# Numeric owners go through chown/chmod (POSIX requires numeric IDs there): `install -o/-g`
+# rejects IDs without a named group on some coreutils (e.g. Ubuntu's Rust uutils).
+# Every file is checked afterwards: wrong ownership or mode fails the upload.
+install_cmd="set -e; umask 077"
 for f in "${files[@]}"; do
-  dir="$DEPLOY_DIR/$(dirname "$f")"
-  install_cmd+="; install -d -o \"\$SUDO_USER\" -g $CONTAINER_UID -m 0750 $(q "$dir")"
-  install_cmd+="; install -o $CONTAINER_UID -g $CONTAINER_UID -m 0400 $(q "$stage/${f//\//__}") $(q "$DEPLOY_DIR/$f")"
+  dir="$(q "$DEPLOY_DIR/$(dirname "$f")")" src="$(q "$stage/${f//\//__}")" dst="$(q "$DEPLOY_DIR/$f")"
+  install_cmd+="; mkdir -p $dir; chown \"\$SUDO_USER:$CONTAINER_UID\" $dir; chmod 0750 $dir"
+  install_cmd+="; cp $src $dst; chown $CONTAINER_UID:$CONTAINER_UID $dst; chmod 0400 $dst"
+  install_cmd+="; test \"\$(stat -c %u:%g:%a $dst)\" = $CONTAINER_UID:$CONTAINER_UID:400"
+  install_cmd+="; echo \"  \$(stat -c '%A %u:%g' $dst) $f\""
 done
 
 log "Installing secrets on $DEPLOY_HOST (sudo password requested)"

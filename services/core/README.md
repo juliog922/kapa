@@ -20,6 +20,42 @@ Every account in `secrets/accounts.*.env` works like a WhatsApp account:
 - **Sends**: `Gmail::send(from_account, Outgoing)` from any configured account (SMTP STARTTLS,
   text + attachments, replies thread via In-Reply-To), returning the Message-ID.
 
+## SQL Server (Sage ERP, read-only)
+
+Core reaches the Sage database with `tiberius` (SQL Server's TDS protocol in pure Rust, TLS via
+the same rustls): **no ODBC driver** (`msodbcsql17` is not needed).
+
+**Sage is never written.** Three independent layers, any one of which blocks a write:
+
+1. **Types**: the SQL Server client is private to `sqlserver.rs`; the rest of core only gets a
+   `ReadOnlySession` whose single operation is `select`.
+2. **Statement guard**: every statement is checked before it is sent: exactly one `SELECT`,
+   no `;`, no comments, no write/DDL/exec/escape keyword (`INSERT`, `UPDATE`, `DELETE`, `MERGE`,
+   `INTO`, `EXEC`, `OPENROWSET`, `xp_`/`sp_`…). Unit tests prove every statement core sends
+   passes and 18 write attempts are refused.
+3. **Login audit**: on connect core asks SQL Server what the login may do (database
+   permissions, `db_owner`/`db_datawriter`/`db_ddladmin`, `sysadmin`) and **refuses** a login
+   that can write, alter or execute. Create one with `sql/readonly-login.sql` (run by a DBA).
+
+Settings in `secrets/sqlserver.{dev,prod}.env` (template `sqlserver.example.env`):
+`SQLSERVER_HOST`, `_PORT` (1433), `_DB`, `_USER`, `_PASSWORD` (quotes allowed),
+`_ENCRYPT` = `required` (default) | `login` | `none`, `_TRUST_CERT` (default `true`).
+
+```bash
+make deploy-check-sqlserver                      # from OMEN16: runs the check on prike (core container)
+make -C services/core sqlserver-check            # where the server is reachable, with sqlserver.dev.env
+SQLSERVER_LIVE=1 make -C services/core test      # also run the live SQL Server test (reachable only)
+```
+
+The check connects, prints the server version, database and login, then verifies every table
+and column core relies on (`Clientes`, `Articulos`, `CabeceraPedidoCliente`,
+`LineasPedidoCliente`): presence, type family, text lengths (shorter = truncation warning),
+approximate rows (from `sys.partitions`, no table scan), and whether the login can SELECT and
+could write. Exit 0 when everything core needs is there.
+
+If the server only speaks TLS 1.0/1.1 (old SQL Server versions), the login fails with a TLS
+error: set `SQLSERVER_ENCRYPT=none` (no TLS; acceptable only inside the LAN/VPN).
+
 ## Secrets
 
 `secrets/accounts.{dev,prod}.env` and `secrets/admin.{dev,prod}.env`, gitignored; only the

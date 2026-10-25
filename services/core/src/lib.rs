@@ -9,6 +9,7 @@ pub mod gmail;
 pub mod imap;
 pub mod mail;
 pub mod smtp;
+pub mod sqlserver;
 pub mod status;
 pub mod store;
 

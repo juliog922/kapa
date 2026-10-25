@@ -21,16 +21,20 @@ SOURCES   := src/*.rs tests/*.rs benches/*.rs
 TEST_NET  := kapa-core-test
 TEST_DB   := kapa-core-testdb
 TEST_URL  := postgres://kapa_test:kapa_test@$(TEST_DB):5432/postgres
-# Live Gmail test: the dev accounts file (gitignored); skipped when absent.
+# Live tests: the dev secrets (gitignored); each live test is skipped when its file is absent.
+# The Sage SQL Server is only reachable from the server's network: its live test is opt-in
+# (SQLSERVER_LIVE=1); from elsewhere use `make deploy-check-sqlserver` at the repo root.
 DEV_ACCOUNTS := secrets/accounts.dev.env
+DEV_SQLSERVER := secrets/sqlserver.dev.env
 
 DOCKER    := docker run --rm -v $(ROOT):/src -w /src/services/$(SERVICE)
 RUN       := $(DOCKER) $(TTY) -u $(UID):$(GID) -v kapa-cargo-cache-$(UID):/cache $(TOOLS_IMG)
 RUN_DB    := $(DOCKER) $(TTY) -u $(UID):$(GID) -v kapa-cargo-cache-$(UID):/cache --network $(TEST_NET) \
-             -e TEST_DATABASE_URL=$(TEST_URL) $(if $(wildcard $(DEV_ACCOUNTS)),-e ACCOUNTS_FILE=$(DEV_ACCOUNTS)) $(TOOLS_IMG)
+             -e TEST_DATABASE_URL=$(TEST_URL) $(if $(wildcard $(DEV_ACCOUNTS)),-e ACCOUNTS_FILE=$(DEV_ACCOUNTS)) \
+             $(if $(and $(SQLSERVER_LIVE),$(wildcard $(DEV_SQLSERVER))),-e SQLSERVER_FILE=$(DEV_SQLSERVER)) $(TOOLS_IMG)
 RUN_PERF  := $(DOCKER) $(TTY) --privileged -u 0 -v kapa-cargo-cache-perf:/cache -e BENCH -e BENCHTIME $(TOOLS_IMG)
 
-.PHONY: help tools ready format lint check-docs test test-unit test-integration testdb testdb-stop bench secrets-perms build clean
+.PHONY: help tools ready format lint check-docs test test-unit test-integration sqlserver-check testdb testdb-stop bench secrets-perms build clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "Core service targets:\n"} /^[a-zA-Z_-]+:.*##/ { printf "  \033[32m%-18s\033[0m%s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -61,9 +65,13 @@ test: test-unit test-integration ## Unit + integration tests
 test-unit: tools ## Unit tests: no database, no network (fake IMAP/SMTP servers)
 	$(RUN) cargo test --locked --lib
 
-test-integration: tools ## PostgreSQL + live Gmail (live part needs secrets/accounts.dev.env)
+test-integration: tools ## PostgreSQL + live Gmail and SQL Server (need secrets/*.dev.env)
 	@$(MAKE) testdb
-	@rc=0; $(RUN_DB) cargo test --locked --test integration -- --nocapture || rc=$$?; $(MAKE) testdb-stop; exit $$rc
+	@rc=0; $(RUN_DB) cargo test --locked --test integration --test sqlserver -- --nocapture || rc=$$?; $(MAKE) testdb-stop; exit $$rc
+
+sqlserver-check: tools ## Connect to the Sage SQL Server (secrets/sqlserver.dev.env) and check the schema core uses
+	@test -f $(DEV_SQLSERVER) || { echo "Create $(DEV_SQLSERVER) from secrets/sqlserver.example.env first"; exit 1; }
+	$(RUN) sh -c 'SQLSERVER_FILE=$(DEV_SQLSERVER) cargo run --locked -q --bin core -- --check-sqlserver'
 
 testdb:
 	@docker network inspect $(TEST_NET) >/dev/null 2>&1 || docker network create $(TEST_NET) >/dev/null
