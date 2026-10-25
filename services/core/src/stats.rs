@@ -5,7 +5,7 @@
 //! Personal columns only get counts: never min/max or top values, which would expose them.
 
 use crate::sample::{PERSONAL, cell_json, json_str};
-use crate::sqlserver::{Found, Kind, ReadOnlySession, Table};
+use crate::sqlserver::{Found, Kind, ReadOnlySession, Table, cell};
 use crate::{Error, Result};
 use tiberius::Row;
 
@@ -89,7 +89,7 @@ async fn top_json(session: &mut ReadOnlySession, table: &str, column: &str) -> R
         .iter()
         .map(|r| {
             let value = r.cells().next().map_or_else(|| "null".to_owned(), |(_, d)| cell_json(d, false));
-            format!("[{value}, {}]", r.get::<i64, _>(1).unwrap_or(0))
+            format!("[{value}, {}]", cell::<i64, _>(r, 1).unwrap_or(0))
         })
         .collect();
     Ok(format!("[{}]", pairs.join(", ")))
@@ -102,10 +102,11 @@ async fn top_json(session: &mut ReadOnlySession, table: &str, column: &str) -> R
 pub async fn table_stats(session: &mut ReadOnlySession, table: &Table, found: &[Found]) -> Result<String> {
     let rows = session.select(&stats_sql(table, found), &[]).await?;
     let row = rows.first().ok_or_else(|| Error::Protocol(format!("no statistics for {}", table.name)))?;
-    let total = row.get::<i64, _>("rows").unwrap_or(0);
+    let total = cell::<i64, _>(row, "rows").unwrap_or(0);
     let mut columns = columns_json(row);
     for (name, metrics) in &mut columns {
-        let distinct = row.get::<i32, _>(format!("{name}__distinct").as_str());
+        // Large objects have no __distinct metric: cell() yields None instead of panicking.
+        let distinct = cell::<i32, _>(row, format!("{name}__distinct").as_str());
         if !personal(name) && distinct.is_some_and(|d| (1..=TOP_DISTINCT).contains(&d)) {
             metrics.push(format!("\"top\": {}", top_json(session, table.name, name).await?));
         }

@@ -274,7 +274,8 @@ pub async fn connect(cfg: &Config) -> Result<ReadOnlySession> {
 /// Query failure.
 pub async fn write_permissions(session: &mut ReadOnlySession) -> Result<Vec<String>> {
     let rows = session.select(WRITE_PERMISSIONS, &[]).await?;
-    Ok(rows.iter().filter_map(|r| r.get::<&str, _>(0).map(str::to_owned)).collect())
+    // Strict: an unreadable permission row fails the audit instead of being skipped.
+    rows.iter().map(|r| Ok(r.try_get::<&str, _>(0)?.unwrap_or_default().to_owned())).collect()
 }
 
 /// Opens a session (30 s timeout) as `cfg.user` on `cfg.database`, without the audit.
@@ -302,6 +303,12 @@ async fn open(cfg: &Config) -> Result<ReadOnlySession> {
         .await
         .map_err(|_| Error::Protocol(format!("sql server {}:{}: login timeout", cfg.host, cfg.port)))??;
     Ok(ReadOnlySession(session))
+}
+
+/// Reads one cell leniently: `None` for SQL NULL, a missing column or another type. Unlike
+/// `Row::get`, which PANICS in those cases, so production code never calls `get`.
+pub fn cell<'a, R: tiberius::FromSql<'a>, I: tiberius::QueryIdx>(row: &'a Row, idx: I) -> Option<R> {
+    row.try_get::<R, I>(idx).ok().flatten()
 }
 
 /// Family of a SQL type, as far as core cares.
@@ -451,7 +458,7 @@ pub fn compare(table: &Table, found: &[Found]) -> Diff {
 pub async fn server_info(session: &mut ReadOnlySession) -> Result<(String, String, String)> {
     let rows = session.select(SERVER_INFO, &[]).await?;
     let row = rows.first().ok_or_else(|| Error::Protocol("no server info".into()))?;
-    let text = |i| row.get::<&str, _>(i).unwrap_or_default().to_owned();
+    let text = |i| cell::<&str, _>(row, i).unwrap_or_default().to_owned();
     Ok((text(0).lines().next().unwrap_or_default().to_owned(), text(1), text(2)))
 }
 
@@ -476,7 +483,7 @@ pub struct TableCheck {
 /// Query failure.
 pub async fn check_table(session: &mut ReadOnlySession, table: &str) -> Result<TableCheck> {
     let rows = session.select(COLUMNS, &[&table]).await?;
-    let Some(schema) = rows.first().and_then(|r| r.get::<&str, _>(0)).map(str::to_owned) else {
+    let Some(schema) = rows.first().and_then(|r| cell::<&str, _>(r, 0)).map(str::to_owned) else {
         return Ok(TableCheck::default());
     };
     let columns = rows.iter().map(found).collect();
@@ -486,8 +493,8 @@ pub async fn check_table(session: &mut ReadOnlySession, table: &str) -> Result<T
 
 /// Converts an `INFORMATION_SCHEMA.COLUMNS` row into a [`Found`] column.
 fn found(row: &Row) -> Found {
-    let text = |i| row.get::<&str, _>(i).unwrap_or_default().to_owned();
-    (text(1), text(2), row.get::<i32, _>(3))
+    let text = |i| cell::<&str, _>(row, i).unwrap_or_default().to_owned();
+    (text(1), text(2), cell::<i32, _>(row, 3))
 }
 
 /// Approximate rows and SELECT / write permissions of `schema.table`.
@@ -495,7 +502,9 @@ async fn stats(session: &mut ReadOnlySession, schema: &str, table: &str) -> Resu
     let object = format!("[{}].[{}]", schema.replace(']', "]]"), table.replace(']', "]]"));
     let rows = session.select(TABLE_STATS, &[&object.as_str()]).await?;
     let row = rows.first().ok_or_else(|| Error::Protocol("no table stats".into()))?;
-    Ok((row.get::<i64, _>(0), row.get::<i32, _>(1) == Some(1), row.get::<i32, _>(2) == Some(1)))
+    // Permissions are read strictly: an unexpected value fails the check, never reads as "no".
+    let granted = |i| -> Result<bool> { Ok(row.try_get::<i32, _>(i)? == Some(1)) };
+    Ok((cell::<i64, _>(row, 0), granted(1)?, granted(2)?))
 }
 
 /// Lists the column problems of a table under its summary line.
@@ -586,6 +595,17 @@ mod tests {
             "OTHER=1",
         ] {
             assert!(parse_config(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn production_code_never_uses_the_panicking_row_get() {
+        // Regression: Row::get panics on a missing column (it crashed the statistics export).
+        for file in ["sqlserver.rs", "sample.rs", "stats.rs"] {
+            let path = format!("{}/src/{file}", env!("CARGO_MANIFEST_DIR"));
+            let text = std::fs::read_to_string(&path).unwrap();
+            let production = text.split("#[cfg(test)]").next().unwrap();
+            assert!(!production.contains(".get::<"), "{file} uses Row::get: use try_get or sqlserver::cell");
         }
     }
 
