@@ -22,6 +22,8 @@ TEST_NET  := kapa-core-test
 TEST_DB   := kapa-core-testdb
 TEST_URL  := postgres://kapa_test:kapa_test@$(TEST_DB):5432/postgres
 # Live Gmail test: the dev accounts file (gitignored); skipped when absent.
+# SQL Server is only reachable from the server: its live checks run there
+# (`make deploy-sync-sqlserver` at the repo root); here the Sage fixture is tested offline.
 DEV_ACCOUNTS := secrets/accounts.dev.env
 
 DOCKER    := docker run --rm -v $(ROOT):/src -w /src/services/$(SERVICE)
@@ -61,9 +63,9 @@ test: test-unit test-integration ## Unit + integration tests
 test-unit: tools ## Unit tests: no database, no network (fake IMAP/SMTP servers)
 	$(RUN) cargo test --locked --lib
 
-test-integration: tools ## PostgreSQL + live Gmail (live part needs secrets/accounts.dev.env)
+test-integration: tools ## PostgreSQL + live Gmail (secrets/accounts.dev.env) + Sage fixture (testdata/sage.local.json)
 	@$(MAKE) testdb
-	@rc=0; $(RUN_DB) cargo test --locked --test integration -- --nocapture || rc=$$?; $(MAKE) testdb-stop; exit $$rc
+	@rc=0; $(RUN_DB) cargo test --locked --test integration --test sage_fixture -- --nocapture || rc=$$?; $(MAKE) testdb-stop; exit $$rc
 
 testdb:
 	@docker network inspect $(TEST_NET) >/dev/null 2>&1 || docker network create $(TEST_NET) >/dev/null

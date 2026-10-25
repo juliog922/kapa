@@ -20,6 +20,69 @@ Every account in `secrets/accounts.*.env` works like a WhatsApp account:
 - **Sends**: `Gmail::send(from_account, Outgoing)` from any configured account (SMTP STARTTLS,
   text + attachments, replies thread via In-Reply-To), returning the Message-ID.
 
+## SQL Server (Sage ERP, read-only)
+
+Core reaches the Sage database with `tiberius` (SQL Server's TDS protocol in pure Rust, TLS via
+the same rustls): **no ODBC driver** (`msodbcsql17` is not needed).
+
+**Sage is never written.** Three independent layers, any one of which blocks a write:
+
+1. **Types**: the SQL Server client is private to `sqlserver.rs`; the rest of core only gets a
+   `ReadOnlySession` whose single operation is `select`.
+2. **Statement guard**: every statement is checked before it is sent: exactly one `SELECT`,
+   no `;`, no comments, no write/DDL/exec/escape keyword (`INSERT`, `UPDATE`, `DELETE`, `MERGE`,
+   `INTO`, `EXEC`, `OPENROWSET`, `xp_`/`sp_`…). Unit tests prove every statement core sends
+   passes and 18 write attempts are refused.
+3. **Login audit**: on connect core asks SQL Server what the login may do (database
+   permissions, `db_owner`/`db_datawriter`/`db_ddladmin`, `sysadmin`) and **refuses** a login
+   that can write, alter or execute. Create one with `sql/readonly-login.sql` (run by a DBA).
+
+Settings in `secrets/sqlserver.{dev,prod}.env` (template `sqlserver.example.env`):
+`SQLSERVER_HOST`, `_PORT` (1433), `_DB`, `_USER`, `_PASSWORD` (quotes allowed),
+`_ENCRYPT` = `required` (default) | `login` | `none`, `_TRUST_CERT` (default `true`).
+
+The SQL Server is only reachable from prike, so its **live** checks run there, inside the
+deployed core container (the same binary that will query Sage), driven from OMEN16:
+
+```bash
+make deploy-check-sqlserver     # live: read-only login audit + schema check (exit 0 = all good)
+make deploy-sync-sqlserver      # live check, then export schema + masked sample (fixture)
+```
+
+Everything else is tested **offline** on that fixture (`tests/sage_fixture.rs`, part of
+`make -C services/core test`): every column core relies on exists with a compatible type, the
+sample is coherent (every line's order, every order's client and every referenced article are
+present), and personal data is masked. Without the fixture (CI, fresh clone) they skip loudly.
+
+The check connects, prints the server version, database and login, then verifies every table
+and column core relies on (`Clientes`, `Articulos`, `CabeceraPedidoCliente`,
+`LineasPedidoCliente`): presence, type family, text lengths (shorter = truncation warning),
+approximate rows (from `sys.partitions`, no table scan), and whether the login can SELECT and
+could write. Exit 0 when everything core needs is there.
+
+If the server only speaks TLS 1.0/1.1 (old SQL Server versions), the login fails with a TLS
+error: set `SQLSERVER_ENCRYPT=none` (no TLS; acceptable only inside the LAN/VPN).
+
+## Sage sample data (tests and development)
+
+```bash
+make deploy-sync-sqlserver                       # 10 latest orders (SAMPLE_ORDERS=50 for more)
+```
+
+Runs `core --sample-sqlserver` on prike and saves `services/core/testdata/sage.local.json`
+(**gitignored**). It contains:
+
+- `schema`: every column of `Clientes`, `Articulos`, `CabeceraPedidoCliente` and
+  `LineasPedidoCliente` (type, length, precision, nullability) and approximate row counts;
+- `sample`: a **coherent** batch: the latest orders, their lines, their clients and the articles
+  they reference, plus the newest sellable catalog articles (`K_BOT = -1`). Only the columns core
+  maps are exported, so unrelated sensitive data (bank details…) never leaves Sage.
+
+Personal data (`Nombre`, phones, e-mails, `Domicilio`, `CifDni`, `RazonSocial`) is **masked by
+default**, deterministically (same input, same mask: joins still work; digits stay digits,
+e-mail domains become `example.com`). `SAMPLE_RAW=1` keeps it real and asks for confirmation.
+Reads use `NOLOCK`, so sampling never blocks Sage users; every query passes the read-only guard.
+
 ## Secrets
 
 `secrets/accounts.{dev,prod}.env` and `secrets/admin.{dev,prod}.env`, gitignored; only the

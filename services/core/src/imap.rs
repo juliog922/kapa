@@ -7,8 +7,11 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::net::TcpStream;
 use tokio_rustls::{TlsConnector, client::TlsStream, rustls};
 
-/// Gmail closes IDLE after about 29 minutes; re-issue it before that.
-pub const IDLE_RENEW: Duration = Duration::from_mins(25);
+/// Longest wait in one IDLE before leaving it to fetch anyway. Gmail's IDLE push is
+/// best-effort: it was measured arriving ~29 s late, and sometimes not at all. Leaving IDLE
+/// and fetching makes the server report pending changes, so a missed push costs at most
+/// this long (well under Gmail's ~29 min IDLE limit). Cost: one small round trip.
+pub const IDLE_POLL: Duration = Duration::from_secs(15);
 
 /// One untagged response line with its literals (`{n}` blocks) in order.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -42,11 +45,23 @@ pub struct Imap<S> {
     tag: u32,
 }
 
+/// Installs `ring` as the process-wide rustls crypto provider (once). Required because
+/// `tiberius` also enables rustls' `aws-lc-rs` backend: with two backends compiled in, rustls
+/// refuses to pick one and panics. Every TLS in core (IMAP, SMTP, SQL Server) then uses ring.
+pub fn install_crypto_provider() {
+    static INSTALLED: OnceLock<()> = OnceLock::new();
+    INSTALLED.get_or_init(|| {
+        // Err only means a provider was already installed, which is what we want.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 /// Shared TLS configuration with the Mozilla root certificates (built once).
 fn tls_config() -> Arc<rustls::ClientConfig> {
     static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
     CONFIG
         .get_or_init(|| {
+            install_crypto_provider();
             let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
             Arc::new(rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth())
         })
@@ -300,6 +315,14 @@ mod tests {
         assert!(err.to_string().contains("AUTHENTICATIONFAILED"), "{err}");
         assert!(!imap.idle(Duration::from_millis(50)).await.unwrap());
         server.await.unwrap();
+    }
+
+    #[test]
+    fn tls_config_builds_with_both_crypto_backends_compiled_in() {
+        // Regression: tiberius enables aws-lc-rs next to ring; building a config must not panic.
+        let config = tls_config();
+        assert!(Arc::ptr_eq(&config, &tls_config()), "built once and shared");
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some(), "a process-wide provider is installed");
     }
 
     #[test]

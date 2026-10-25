@@ -88,6 +88,7 @@ services:
       PGSSLMODE: disable
       ACCOUNTS_FILE: /run/secrets/core/accounts.${CORE_SECRETS:-prod}.env
       ADMIN_FILE: /run/secrets/core/admin.${CORE_SECRETS:-prod}.env
+      SQLSERVER_FILE: /run/secrets/core/sqlserver.${CORE_SECRETS:-prod}.env
       STATUS_FILE: /tmp/core.status
     volumes:
       - ./services/core/secrets:/run/secrets/core:ro

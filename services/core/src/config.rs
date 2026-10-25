@@ -14,7 +14,7 @@ pub struct Credentials {
 }
 
 impl fmt::Debug for Credentials {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Credentials").field("address", &self.address).field("password", &"<redacted>").finish()
     }
 }
@@ -99,13 +99,26 @@ pub fn parse_admin(text: &str) -> Result<Credentials> {
 }
 
 /// Splits a file into `(line number, key, value)`, skipping blank lines and comments.
-fn entries(text: &str) -> Result<Vec<(usize, &str, &str)>> {
+/// A value wrapped in matching single or double quotes is unwrapped.
+pub(crate) fn entries(text: &str) -> Result<Vec<(usize, &str, &str)>> {
     text.lines()
         .enumerate()
         .map(|(i, line)| (i + 1, line.trim()))
         .filter(|(_, line)| !line.is_empty() && !line.starts_with('#'))
-        .map(|(n, line)| line.split_once('=').map(|(k, v)| (n, k.trim(), v.trim())).ok_or_else(|| invalid(n, "expected KEY=VALUE")))
+        .map(|(n, line)| {
+            line.split_once('=').map(|(k, v)| (n, k.trim(), unquote(v.trim()))).ok_or_else(|| invalid(n, "expected KEY=VALUE"))
+        })
         .collect()
+}
+
+/// Removes one pair of matching surrounding quotes (`"x"` or `'x'`).
+fn unquote(value: &str) -> &str {
+    for quote in ['"', '\''] {
+        if let Some(inner) = value.strip_prefix(quote).and_then(|v| v.strip_suffix(quote)) {
+            return inner;
+        }
+    }
+    value
 }
 
 /// Validates an address and an app password (whitespace removed).
@@ -151,6 +164,15 @@ mod tests {
         ] {
             assert!(parse_accounts(bad).is_err(), "{bad} must be rejected");
         }
+    }
+
+    #[test]
+    fn unquotes_values() {
+        assert_eq!(unquote("\"a@#b\""), "a@#b");
+        assert_eq!(unquote("'x'"), "x");
+        assert_eq!(unquote("\"unbalanced"), "\"unbalanced");
+        assert_eq!(unquote("plain"), "plain");
+        assert_eq!(entries("K=\"v w\"").unwrap(), [(1, "K", "v w")]);
     }
 
     #[test]
