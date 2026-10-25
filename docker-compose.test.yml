@@ -19,3 +19,15 @@ services:
       # by `make -C services/core test`).
       ACCOUNTS_FILE: /run/secrets/core/none.env
       ADMIN_FILE: /run/secrets/core/none.env
+  tachyon:
+    restart: "no"
+    # Models pulled for the GPU tests (make test-gpu) survive them: an external volume, which
+    # `down -v` never removes, so ~3.7 GB are pulled once per machine.
+    volumes: !override
+      - tachyon_test_models:/models
+      - tachyon_run:/run/tachyon
+
+volumes:
+  tachyon_test_models:
+    external: true
+    name: kapa-tachyon-models

@@ -1,0 +1,121 @@
+# tachyon service
+
+[Tachyon](https://github.com/juliog922/tachyon) is the platform's local inference engine: Gemma 4
+chat, Laya typed decisions and Granite embeddings on the NVIDIA GPU. `tachyon serve` keeps the
+models in VRAM between requests; core (and any other service) talks to it over a Unix socket and a
+shared memory of its own.
+
+**Tachyon's source is not part of this repository.** It lives in its own project, with its own
+rules; Kapa ships a **prebuilt binary** of it and never changes it.
+
+```
+services/tachyon/
+├── bin/tachyon          the engine, built from a commit of ~/projects/tachyon (committed)
+├── bin/VERSION          its provenance: source commit, how it was built, SHA-256
+├── Dockerfile           distroless runtime (uid 65532) around bin/tachyon
+├── seccomp.json         Docker's default seccomp profile + io_uring (generated)
+├── scripts/seccomp.py   regenerates it: make -C services/tachyon seccomp TAG=v27.3.1
+├── eval/                tests + benchmarks of the models Kapa uses (make deploy-tachyon-eval)
+└── Makefile             import, verify, build
+```
+
+## Updating the engine
+
+```bash
+make -C services/tachyon import                       # from ~/projects/tachyon (TACHYON_SRC=path)
+git add services/tachyon/bin && git commit -m "tachyon: <commit>"
+```
+
+`import` builds in `rust:1.98.1-bookworm`, with the source mounted read-only: Debian 12's glibc is
+the runtime image's, so the binary runs there (one built on the host could need a newer glibc). It
+refuses a source with uncommitted changes, so `bin/VERSION` always names a real commit
+(`ALLOW_DIRTY=1` to override, and VERSION says so), then runs `verify`.
+
+`verify` (also `make test` here and in the root) checks that `bin/tachyon` matches the SHA-256 in
+`bin/VERSION` and runs on the runtime base image. Tachyon's own gates (format, clippy, complexity,
+tests, GPU tests) are Tachyon's: `./ci.sh` in its project.
+
+## Running in a container
+
+| Need | How |
+|---|---|
+| The GPU | NVIDIA Container Toolkit on the host; compose reserves one GPU (`deploy.resources`) and the toolkit mounts `libcuda.so.1` |
+| `io_uring` (the model loader, no fallback) | `seccomp.json`: Docker's default profile, which denies io_uring since Docker 25, plus exactly `io_uring_setup/enter/register` |
+| `O_DIRECT` reads | models in the `tachyon_models` volume (a real filesystem, not the overlay) |
+| The same user as its clients | the daemon admits only its uid (`SO_PEERCRED`, socket mode 0600): tachyon and core both run as 65532 |
+| A shared socket | `tachyon_run`: a tmpfs volume owned by 65532, mode 0700, mounted in tachyon and (read-only) in core |
+
+Shared memory crosses containers as a `memfd` passed over the socket, woken by futexes: both work
+between containers on the same kernel. The service is in compose profile `gpu`, so hosts without
+a GPU (the CI stack, laptops without the toolkit) never start it.
+
+## On prike
+
+```bash
+make deploy-check-gpu                     # driver, GPU, NVIDIA Container Toolkit, docker runtime
+# add COMPOSE_PROFILES=gpu to the production .env (make run passes it as --profile gpu), then:
+make deploy-env && make deploy            # (or merge to main: CD deploys)
+make deploy-tachyon ARGS=doctor           # inside the container: driver, GPU, memory, certificates, Hub
+make deploy-tachyon ARGS="pull gemma-4-e4b"
+make deploy-tachyon ARGS=ps               # also shown by make monitor (kapa.status)
+```
+
+Models persist in the `tachyon_models` volume (with the CUDA kernel cache). `HF_TOKEN` is only
+needed for gated models.
+
+## Evaluation: the models Kapa uses
+
+| Use | Model |
+|---|---|
+| Text, images, audio | `gemma-4-e4b` |
+| Decisions on customer messages | `laya-multilingual` (Spanish; `laya-english` is English only) |
+| Embeddings | `granite-embedding-311m` (768 dims; `EMBED=granite-embedding-97m` to compare) |
+
+Both machines have an NVIDIA GPU, so the same evaluation runs **before deploying**, on OMEN16:
+
+```bash
+PULL=1 make test-gpu                   # once: pulls the models into the volume kapa-tachyon-models
+make test                              # from then on part of every run (checks only, no bench)
+make bench-gpu SAVE_BASELINE=1         # OMEN16's bench baseline (make bench includes bench-gpu)
+PULL=1 SAVE_BASELINE=1 make deploy-tachyon-eval   # the same on prike, bench included
+```
+
+`make test-gpu` starts tachyon on this machine's GPU exactly as deployed (image, seccomp, volumes,
+uid 65532) in its own compose project, then proves: the container gets healthy (GPU, io_uring,
+the daemon); **a second container as uid 65532, like core, is served through the shared socket and
+shared memory**, while another uid is kept out; and the models pass the evaluation. Where Docker
+has no NVIDIA runtime it is skipped with a warning (`REQUIRE_GPU=1` makes that a failure). Models
+stay in the external volume `kapa-tachyon-models`, which test cleanups never remove.
+
+Every call goes through the daemon, as production's will (`eval/eval.py`, standard library only):
+
+- **Gemma checks**, strict, with answers fixed by construction: arithmetic and a capital in
+  Spanish; the color of images it generates (red; blue and yellow); the transcription of real
+  speech (LibriSpeech clips from `~/projects/tachyon`, `TACHYON_SRC=path`).
+- **Laya and embeddings are classifiers, scored by accuracy** on labelled sets, every miss
+  listed: 16 B2B messages, 4 per intent (`pedido`, `incidencia`, `consulta`, `saludo`), hard
+  cases included, for the intent and the new-order flag (`DECIDE_MIN`, 85%); 12 product queries,
+  Spanish and English, with hard negatives, for top-1 retrieval (`EMBED_MIN`, 80%). Retrieval is
+  measured on the raw upper-case Sage descriptions and on normalized text (lower case), the form
+  core embeds.
+
+Decisions measured on OMEN16 (RTX 3060), first run of the labelled sets:
+
+| Decision | Measured |
+|---|---|
+| A new order is Laya's intent `pedido`, not a separate yes/no question | yes/no question: 12/16 (*"Perfecto, recibido. Un saludo"* → 0.99); intent: 14/16, every order caught, none false |
+| Catalog text is embedded normalized (lower case, single spaces) | top-1 retrieval: raw upper-case 9/12, normalized 10/12 |
+
+Grow the labelled sets with real (anonymized) messages and queries rather than tuning wording to
+these: the same examples that score a prompt cannot also tune it.
+- **Goldens**, per machine in `eval/results/<machine>/expected.json`: Gemma decodes greedily, so
+  its answers are deterministic on a given GPU (another GPU may differ in floating point, hence
+  per machine). The first run records them: review and commit. Later runs require the same
+  answers; `APPROVE=1` accepts deliberate changes (never a failed check).
+- **Bench** (`make bench-gpu`, `make deploy-tachyon-eval`): load times; prefill and decode tok/s
+  from the engine for text, image and audio; decide and embed latency end to end (docker exec
+  included: the round trip is reported too); embedding throughput in batches of 64.
+  `SAVE_BASELINE=1` records `eval/results/<machine>/baseline.json`; later runs fail when 5%
+  slower (engine timings) or 20% (end to end).
+
+Reports are saved in `testdata/eval-<machine>.local.md` (gitignored).

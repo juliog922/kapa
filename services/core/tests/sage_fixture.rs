@@ -3,6 +3,7 @@
 //! Skipped loudly when the file is absent (CI, fresh clones). These tests guard what core
 //! assumes about Sage: the schema it relies on, coherent mock data, and masked personal data.
 
+use kapa_core::sage::{Article, Client, Date, Decimal, OrderHeader, OrderLine, Record};
 use kapa_core::sample::FORMAT;
 use kapa_core::sqlserver::{Found, SAGE_TABLES, compare};
 use kapa_core::stats::personal;
@@ -144,4 +145,79 @@ fn personal_data_is_masked() {
             }
         }
     }
+}
+
+/// A fixture row as a Sage record: decimals are exported as strings, dates as ISO strings.
+struct Json<'a>(&'a Value);
+
+impl Json<'_> {
+    /// The value of `column`; a missing column is an error, like on the server.
+    fn field(&self, column: &str) -> kapa_core::Result<&Value> {
+        self.0.get(column).ok_or_else(|| kapa_core::Error::Invalid(format!("fixture column {column} missing")))
+    }
+
+    /// A string value parsed with `parse`; `NULL` is `None`.
+    fn parsed<T>(&self, column: &str, parse: impl Fn(&str) -> Option<T>) -> kapa_core::Result<Option<T>> {
+        match self.field(column)? {
+            Value::Null => Ok(None),
+            Value::String(s) => parse(s).map(Some).ok_or_else(|| kapa_core::Error::Invalid(format!("{column}: unparsable {s}"))),
+            other => Err(kapa_core::Error::Invalid(format!("{column}: unexpected {other}"))),
+        }
+    }
+}
+
+impl Record for Json<'_> {
+    fn text(&self, column: &str) -> kapa_core::Result<Option<String>> {
+        self.parsed(column, |s| Some(s.to_owned()))
+    }
+
+    fn int(&self, column: &str) -> kapa_core::Result<Option<i64>> {
+        match self.field(column)? {
+            Value::Null => Ok(None),
+            v => v.as_i64().map(Some).ok_or_else(|| kapa_core::Error::Invalid(format!("{column}: not an integer: {v}"))),
+        }
+    }
+
+    fn decimal(&self, column: &str) -> kapa_core::Result<Option<Decimal>> {
+        self.parsed(column, Decimal::parse)
+    }
+
+    fn date(&self, column: &str) -> kapa_core::Result<Option<Date>> {
+        self.parsed(column, Date::parse)
+    }
+}
+
+/// Decodes every row of a sample section, failing with the row on the first error.
+fn decode<T>(fx: &Value, section: &str, from: impl Fn(&Json) -> kapa_core::Result<T>) -> Vec<T> {
+    rows(fx, section).iter().map(|r| from(&Json(r)).unwrap_or_else(|e| panic!("{section}: {e}\nrow: {r}"))).collect()
+}
+
+#[test]
+fn every_sample_row_decodes_into_the_sage_models() {
+    let Some(fx) = fixture() else { return };
+    let clients = decode(&fx, "Clientes", |r| Client::from_record(r));
+    let articles = decode(&fx, "Articulos", |r| Article::from_record(r));
+    let catalog = decode(&fx, "ArticulosCatalogo", |r| Article::from_record(r));
+    let headers = decode(&fx, "CabeceraPedidoCliente", |r| OrderHeader::from_record(r));
+    let lines = decode(&fx, "LineasPedidoCliente", |r| OrderLine::from_record(r));
+
+    let client_keys: HashSet<_> = clients.iter().map(|c| &c.key).collect();
+    let order_keys: HashSet<_> = headers.iter().map(|h| &h.key).collect();
+    let article_keys: HashSet<_> = articles.iter().map(|a| &a.key).collect();
+    assert!(headers.iter().all(|h| client_keys.contains(&h.client)), "every order's client decodes");
+    assert!(lines.iter().all(|l| order_keys.contains(&l.order)), "every line's order decodes");
+    assert!(lines.iter().filter(|l| !l.is_text_line()).all(|l| article_keys.contains(&l.article)), "every article decodes");
+    assert!(catalog.iter().all(|a| a.bot_enabled), "the catalog sample is K_BOT = -1");
+    eprintln!(
+        "sage models: {} clients · {} articles ({} sellable, {} with EAN) · catalog {} ({} sellable) · {} orders · {} lines ({} text-only)",
+        clients.len(),
+        articles.len(),
+        articles.iter().filter(|a| a.is_sellable()).count(),
+        articles.iter().filter(|a| a.ean().is_some()).count(),
+        catalog.len(),
+        catalog.iter().filter(|a| a.is_sellable()).count(),
+        headers.len(),
+        lines.len(),
+        lines.iter().filter(|l| l.is_text_line()).count()
+    );
 }
