@@ -70,10 +70,15 @@ make deploy-sync-sqlserver                       # 10 latest orders (SAMPLE_ORDE
 ```
 
 Runs `core --sample-sqlserver` on prike and saves `services/core/testdata/sage.local.json`
-(**gitignored**). It contains:
+plus a readable `sage-summary.local.md` (both **gitignored**; `make sage-summary` rebuilds the
+summary). The JSON contains:
 
 - `schema`: every column of `Clientes`, `Articulos`, `CabeceraPedidoCliente` and
   `LineasPedidoCliente` (type, length, precision, nullability) and approximate row counts;
+- `stats`: computed on the server over the **full** tables (one `NOLOCK` scan per table) for
+  every column core uses: nulls, empties, zeros, distinct values, min/max, text lengths, and the
+  top 15 values of columns with at most 50 distinct values. Personal columns only get counts,
+  never values;
 - `sample`: a **coherent** batch: the latest orders, their lines, their clients and the articles
   they reference, plus the newest sellable catalog articles (`K_BOT = -1`). Only the columns core
   maps are exported, so unrelated sensitive data (bank details…) never leaves Sage.

@@ -12,6 +12,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/lib/common.sh"
 
 OUT="$ROOT/services/core/testdata/sage.local.json"
+SUMMARY="$ROOT/services/core/testdata/sage-summary.local.md"
 ORDERS="${SAMPLE_ORDERS:-10}"
 RAW="${SAMPLE_RAW:-0}"
 [[ "$ORDERS" =~ ^[0-9]+$ ]] || die "SAMPLE_ORDERS must be a number."
@@ -28,12 +29,17 @@ mkdir -p "$(dirname "$OUT")"
 umask 077
 # Bounded: a core build that predates this option must not hang the terminal.
 LIMIT=300
-log "Exporting Sage schema + sample ($ORDERS latest orders) from $DEPLOY_HOST"
+log "Exporting Sage schema, statistics (full tables) + sample ($ORDERS latest orders) from $DEPLOY_HOST"
 rc=0
 remote "timeout $LIMIT docker exec -e SAMPLE_ORDERS=$(q "$ORDERS") -e SAMPLE_RAW=$(q "$RAW") $(q "$id") /core --sample-sqlserver" > "$OUT.tmp" || rc=$?
 if [[ $rc -eq 0 ]]; then
   mv "$OUT.tmp" "$OUT"
   ok "Saved ${OUT#"$ROOT"/} ($(wc -c < "$OUT") bytes, gitignored)"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 "$ROOT/scripts/sage-summary.py" "$OUT" "$SUMMARY" && ok "Summary ${SUMMARY#"$ROOT"/} (gitignored)"
+  else
+    warn "python3 not found: summary skipped (make sage-summary once it is installed)"
+  fi
   exit 0
 fi
 rm -f "$OUT.tmp"

@@ -11,6 +11,7 @@ pub mod mail;
 pub mod sample;
 pub mod smtp;
 pub mod sqlserver;
+pub mod stats;
 pub mod status;
 pub mod store;
 

@@ -50,10 +50,12 @@ pub struct ReadOnlySession(Client<Compat<TcpStream>>);
 
 impl ReadOnlySession {
     /// Runs one `SELECT` (checked by [`read_only`] before it is sent) and returns its rows.
+    /// Statements may be assembled at run time (e.g. per-column statistics) but only from
+    /// core's own constants, never from external input; the guard checks the final text.
     ///
     /// # Errors
     /// The statement is not a single read-only `SELECT` (refused locally), or query failure.
-    pub async fn select(&mut self, sql: &'static str, params: &[&dyn tiberius::ToSql]) -> Result<Vec<Row>> {
+    pub async fn select(&mut self, sql: &str, params: &[&dyn tiberius::ToSql]) -> Result<Vec<Row>> {
         read_only(sql)?;
         Ok(self.0.query(sql, params).await?.into_first_result().await?)
     }
@@ -370,7 +372,7 @@ pub const SAGE_TABLES: [Table; 4] = [
             ("MarcaProducto", Kind::Text, 50),
             ("K_BOT", Kind::Int, 0),
             ("CodigoAreaCompetenciaLc", Kind::Text, 10),
-            ("CodigoAlternativo", Kind::Text, 40),
+            ("CodigoAlternativo", Kind::Text, 20),
             ("FechaAlta", Kind::DateTime, 0),
             ("PrecioVenta", Kind::Decimal, 0),
             ("StockMinimo", Kind::Decimal, 0),
@@ -387,7 +389,7 @@ pub const SAGE_TABLES: [Table; 4] = [
             ("CodigoCliente", Kind::Text, 15),
             ("FechaPedido", Kind::DateTime, 0),
             ("NumeroLineas", Kind::Int, 0),
-            ("RazonSocial", Kind::Text, 60),
+            ("RazonSocial", Kind::Text, 40),
             ("ImporteLiquido", Kind::Decimal, 0),
         ],
     },
@@ -402,7 +404,7 @@ pub const SAGE_TABLES: [Table; 4] = [
             ("CodigoArticulo", Kind::Text, 21),
             ("DescripcionArticulo", Kind::Text, 60),
             ("Descripcion2Articulo", Kind::Text, 40),
-            ("CodigodelCliente", Kind::Text, 30),
+            ("CodigodelCliente", Kind::Text, 20),
             ("UnidadesPedidas", Kind::Decimal, 0),
             ("Precio", Kind::Decimal, 0),
             ("ImporteNeto", Kind::Decimal, 0),
