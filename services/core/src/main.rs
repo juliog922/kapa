@@ -101,7 +101,13 @@ async fn main() -> ExitCode {
             print!("{report}");
             return ExitCode::from(code);
         }
-        _ => {}
+        None => {}
+        Some(other) => {
+            // Never fall through to running the service: a mistyped or newer option (e.g. run
+            // against an older build) must fail fast, not start a second core in the container.
+            eprintln!("core: unknown option {other}\nusage: core [--healthcheck | --status | --check-sqlserver | --sample-sqlserver]");
+            return ExitCode::from(2);
+        }
     }
     match run(status_path).await {
         Ok(()) => ExitCode::SUCCESS,

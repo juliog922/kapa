@@ -26,11 +26,22 @@ id="$(remote "docker ps -q --filter label=com.docker.compose.project=$(q "$PROJE
 
 mkdir -p "$(dirname "$OUT")"
 umask 077
+# Bounded: a core build that predates this option must not hang the terminal.
+LIMIT=300
 log "Exporting Sage schema + sample ($ORDERS latest orders) from $DEPLOY_HOST"
-if remote "docker exec -e SAMPLE_ORDERS=$(q "$ORDERS") -e SAMPLE_RAW=$(q "$RAW") $(q "$id") /core --sample-sqlserver" > "$OUT.tmp"; then
+rc=0
+remote "timeout $LIMIT docker exec -e SAMPLE_ORDERS=$(q "$ORDERS") -e SAMPLE_RAW=$(q "$RAW") $(q "$id") /core --sample-sqlserver" > "$OUT.tmp" || rc=$?
+if [[ $rc -eq 0 ]]; then
   mv "$OUT.tmp" "$OUT"
   ok "Saved ${OUT#"$ROOT"/} ($(wc -c < "$OUT") bytes, gitignored)"
-else
-  rm -f "$OUT.tmp"
-  die "Export failed (see the message above)."
+  exit 0
 fi
+rm -f "$OUT.tmp"
+  if [[ $rc -eq 124 ]]; then
+    warn "No answer within ${LIMIT}s: the deployed core is probably an older build without this option."
+    log "Restarting core on $DEPLOY_HOST to clear any stray process"
+    remote "docker restart $(q "$id") >/dev/null"
+    die "Deploy the current core first (merge to main, or make deploy), then retry."
+  fi
+[[ $rc -eq 2 ]] && die "The deployed core does not know --sample-sqlserver: deploy the current core first."
+die "Export failed (see the message above)."
