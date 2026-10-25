@@ -26,3 +26,5 @@ services/*/secrets/*
 services/*/target/
 # Local test data exported from production systems (may contain personal data)
 services/*/testdata/*.local.*
+# Python bytecode (services/tachyon/eval)
+__pycache__/

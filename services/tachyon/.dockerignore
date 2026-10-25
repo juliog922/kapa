@@ -1,0 +1,3 @@
+# The runtime image needs bin/tachyon only (the tools stage copies nothing).
+*
+!bin/tachyon

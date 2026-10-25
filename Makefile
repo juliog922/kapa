@@ -13,7 +13,7 @@ MAKEFLAGS     += --no-print-directory
 # -----------------------------------------------------------------------------
 PROJECT           := kapa
 # Services with their own Makefile (format/lint/check-docs/test/bench/deps are delegated).
-SERVICES          := whatsapp core
+SERVICES          := whatsapp core tachyon
 TEST_PROJECT      ?= $(PROJECT)-test
 COMPOSE_FILE      := docker-compose.yml
 COMPOSE_TEST_FILE := docker-compose.test.yml
@@ -70,7 +70,7 @@ endef
 
 .PHONY: help run stop clean format lint check-docs test test-infra test-clean bench deps \
         update-whatsmeow pair-test \
-        deploy deploy-secrets deploy-check-sqlserver deploy-sample-sqlserver deploy-sync-sqlserver sage-summary deploy-stop deploy-clean deploy-logs deploy-logs-ui deploy-env deploy-setup monitor \
+        deploy deploy-check-gpu deploy-tachyon deploy-tachyon-eval deploy-secrets deploy-check-sqlserver deploy-sample-sqlserver deploy-sync-sqlserver sage-summary deploy-stop deploy-clean deploy-logs deploy-logs-ui deploy-env deploy-setup monitor \
         runner runner-start runner-stop runner-status runner-logs \
         check-env check-docker
 
@@ -182,6 +182,15 @@ deploy-sample-sqlserver: ## Sage schema + masked sample -> services/core/testdat
 sage-summary: ## Rebuild services/core/testdata/sage-summary.local.md from the Sage fixture
 	@python3 scripts/sage-summary.py services/core/testdata/sage.local.json services/core/testdata/sage-summary.local.md
 	@echo "services/core/testdata/sage-summary.local.md"
+
+deploy-check-gpu: ## Check the host can run Tachyon: driver, GPU, NVIDIA Container Toolkit
+	@bash scripts/deploy-check-gpu.sh
+
+deploy-tachyon: ## Run the tachyon CLI on the host's container (ARGS="doctor" | "pull gemma-4-e4b" | "ps")
+	@bash scripts/deploy-tachyon.sh $(ARGS)
+
+deploy-tachyon-eval: ## Test + bench gemma-4-e4b, laya-multilingual and the embedding model on the host (PULL=1 APPROVE=1 SAVE_BASELINE=1 EMBED=)
+	@PULL='$(PULL)' APPROVE='$(APPROVE)' SAVE_BASELINE='$(SAVE_BASELINE)' EMBED='$(EMBED)' bash scripts/deploy-tachyon-eval.sh
 
 deploy-secrets: ## Upload services/*/secrets/*.prod.env to the host (asks for sudo there)
 	@bash scripts/deploy-secrets.sh
