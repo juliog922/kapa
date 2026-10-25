@@ -14,7 +14,8 @@ Code: one hand-written file, `main.go`; `pb/` is generated (`make proto`).
 | `Delete(phone)` | Removes the account no matter what: tries to unlink, always wipes locally, cancels pending pairings. |
 | `Send(account, to, text \| image \| audio)` | Uploads media and sends. `voice_note=true` + `audio/ogg; codecs=opus` for voice notes. |
 | `Subscribe(accounts[], peers[])` | Server stream of messages and account events. Empty lists = everything; `peers` filters by contact phone. |
-| `Status()` | Accounts, whatsmeow version, WhatsApp protocol version, `outdated` flag. |
+| `Status()` | Accounts, whatsmeow version, WhatsApp protocol version, `outdated` flag, traffic counters. |
+| `AllowSender(account, sender)` / `RevokeSender` / `ListAllowedSenders(account)` | Per-account sender **allowlist** (stored in PostgreSQL, table `whatsapp_allowed_senders`). |
 
 Plus the standard `grpc.health.v1.Health` service.
 
@@ -28,6 +29,12 @@ Plus the standard `grpc.health.v1.Health` service.
 **Health** (`Status`, shown by `make monitor`): uptime, open streams, messages received / delivered /
 sent, subscribers dropped, and every account with its state and LID. An offline account or a newer
 upstream protocol is a warning; WhatsApp rejecting the client is an issue and fails the health check.
+
+**Sender allowlist (deny by default):** a message is only published if its sender is on the
+receiving account's allowlist; anything else is dropped on arrival (before conversion or media
+download, ~40 ns) and counted as `filtered`. The list lives in PostgreSQL and is cached in memory,
+so the check never hits the database. `Logout` keeps the list, `Delete` removes it.
+`make monitor` shows the size of each account's list and warns when it is empty.
 
 **What is delivered:** text, images and audio (decrypted bytes inline) from one-to-one chats only.
 Groups, status updates, broadcast lists, channels, your own outgoing messages and every other

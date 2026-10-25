@@ -24,6 +24,7 @@ linters:
         - (*google.golang.org/grpc.ClientConn).Close
         - (io.ReadCloser).Close
         - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
     revive:
       rules:
         - name: exported

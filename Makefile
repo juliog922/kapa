@@ -13,7 +13,7 @@ MAKEFLAGS     += --no-print-directory
 # -----------------------------------------------------------------------------
 PROJECT           := kapa
 # Services with their own Makefile (format/lint/check-docs/test/bench/deps are delegated).
-SERVICES          := whatsapp
+SERVICES          := whatsapp core
 TEST_PROJECT      ?= $(PROJECT)-test
 COMPOSE_FILE      := docker-compose.yml
 COMPOSE_TEST_FILE := docker-compose.test.yml
@@ -70,7 +70,7 @@ endef
 
 .PHONY: help run stop clean format lint check-docs test test-infra test-clean bench deps \
         update-whatsmeow pair-test \
-        deploy deploy-stop deploy-clean deploy-logs deploy-logs-ui deploy-env deploy-setup monitor \
+        deploy deploy-secrets deploy-stop deploy-clean deploy-logs deploy-logs-ui deploy-env deploy-setup monitor \
         runner runner-start runner-stop runner-status runner-logs \
         check-env check-docker
 
@@ -115,8 +115,8 @@ test: test-infra ## Full test: stack smoke test + unit and integration tests of 
 bench: ## Benchmarks of every service under perf (BENCH=regex BENCHTIME=1s)
 	@for svc in $(SERVICES); do $(MAKE) -C services/$$svc bench; done
 
-deps: ## Make sure every service has resolved dependencies (go.sum)
-	@for svc in $(SERVICES); do $(MAKE) -C services/$$svc go.sum; done
+deps: ## Make sure every service has resolved dependencies (go.sum, Cargo.lock...)
+	@for svc in $(SERVICES); do $(MAKE) -C services/$$svc ready; done
 
 update-whatsmeow: ## WhatsApp protocol changed? Upgrade whatsmeow and test it
 	@$(MAKE) -C services/whatsapp update-whatsmeow
@@ -142,6 +142,9 @@ test-infra: check-docker deps ## Stack smoke test: every container healthy, gate
 	elif [ "$$rc" != 0 ]; then \
 		printf "$(C_RED)✘ WhatsApp rejected the client or the gateway failed: see above$(C_RESET)\n"; exit 1; \
 	fi; \
+	printf "$(C_BLUE)$(C_BOLD)==>$(C_RESET) Checking core service (health + status)\n"; \
+	$(COMPOSE_TEST) exec -T core /core --healthcheck; \
+	$(COMPOSE_TEST) exec -T core /core --status; \
 	printf "$(C_GREEN)✔ Stack smoke test passed$(C_RESET)\n"
 
 test-clean: check-docker ## Force-remove leftovers of the test environments
@@ -166,6 +169,9 @@ deploy-stop: ## EMERGENCY: stop all services on the host (FORCE=1 skips prompt)
 
 deploy-clean: ## DESTRUCTIVE: remove services, images AND data volumes on the host
 	@bash scripts/deploy-clean.sh
+
+deploy-secrets: ## Upload services/*/secrets/*.prod.env to the host (asks for sudo there)
+	@bash scripts/deploy-secrets.sh
 
 deploy-env: ## Upload local .env to the host as the production config
 	@bash scripts/deploy-env.sh

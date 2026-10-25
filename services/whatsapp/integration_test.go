@@ -140,6 +140,9 @@ func TestStoreMigrationsAndProbes(t *testing.T) {
 	if err = conn.QueryRow(`SELECT count(*) FROM information_schema.tables WHERE table_name LIKE 'whatsmeow\_%'`).Scan(&tables); err != nil || tables == 0 {
 		t.Fatalf("whatsmeow tables = %d, %v", tables, err)
 	}
+	if err = conn.QueryRow(`SELECT count(*) FROM whatsapp_allowed_senders`).Scan(&tables); err != nil {
+		t.Fatalf("allowlist table missing: %v", err)
+	}
 	if probeHealth(addr) != 0 {
 		t.Fatal("health probe failed")
 	}
@@ -175,6 +178,39 @@ func TestDeleteWipesStoredSession(t *testing.T) {
 	}
 	if devices, _ := again.db.GetAllDevices(ctx); len(devices) != 0 {
 		t.Fatalf("session survived Delete: %d devices", len(devices))
+	}
+}
+
+// TestAllowlistPersistence checks the allowlist survives a restart and Delete clears it in PostgreSQL.
+func TestAllowlistPersistence(t *testing.T) {
+	ctx := context.Background()
+	db := tempDB(t)
+	_, c, _ := startTCP(t, db, false)
+	for _, sender := range []string{"34699888777", "34611000000"} {
+		if _, err := c.AllowSender(ctx, &pb.AllowSenderRequest{Account: testPhone, Sender: sender}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := c.RevokeSender(ctx, &pb.RevokeSenderRequest{Account: testPhone, Sender: "34611000000"}); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := newServer(ctx, pgDSN(t, db), testLog(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restarted.allowed(testPhone, "34699888777") || restarted.allowed(testPhone, "34611000000") {
+		t.Fatalf("allowlist after restart: %v", restarted.allow)
+	}
+	restarted.attach(testPhone, whatsmeow.NewClient(restarted.db.NewDevice(), waLog.Noop))
+	if _, err = startBuf(t, restarted).Delete(ctx, &pb.DeleteRequest{Phone: testPhone}); err != nil {
+		t.Fatal(err)
+	}
+	again, err := newServer(ctx, pgDSN(t, db), testLog(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.allowed(testPhone, "34699888777") {
+		t.Fatal("Delete must remove the allowlist from PostgreSQL")
 	}
 }
 
@@ -304,6 +340,10 @@ func TestLive(t *testing.T) {
 	sb, b, _ := startTCP(t, liveDBB, true)
 	waitConnected(t, a, phone, liveDBA)
 	waitConnected(t, b, phone, liveDBB)
+	// Device B only publishes allowed senders: the self chat sender is the test phone itself.
+	if _, err := b.AllowSender(context.Background(), &pb.AllowSenderRequest{Account: phone, Sender: phone}); err != nil {
+		t.Fatal(err)
+	}
 
 	t.Run("status", func(t *testing.T) {
 		st, err := a.Status(context.Background(), &pb.StatusRequest{})
@@ -342,6 +382,9 @@ func TestLive(t *testing.T) {
 		if !audio.GetVoiceNote() || audio.GetSeconds() != 1 {
 			t.Fatalf("audio details: voice %v, seconds %d", audio.GetVoiceNote(), audio.GetSeconds())
 		}
+	})
+	t.Run("unlisted sender is filtered", func(t *testing.T) {
+		assertFiltered(t, sb, a, b, phone)
 	})
 	t.Run("health counters", func(t *testing.T) {
 		stA, errA := a.Status(context.Background(), &pb.StatusRequest{})
@@ -388,6 +431,57 @@ func roundTrip(t *testing.T, sb *server, a, b pb.WhatsAppServiceClient, phone st
 			assertLiveEnvelope(t, ev, m, sent, phone)
 			return m
 		}
+	}
+}
+
+// assertFiltered revokes the test phone on device B, sends from A and checks B drops the
+// message (counted as filtered, never published), then allows the sender again.
+func assertFiltered(t *testing.T, sb *server, a, b pb.WhatsAppServiceClient, phone string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	pair := &pb.RevokeSenderRequest{Account: phone, Sender: phone}
+	if _, err := b.RevokeSender(ctx, pair); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = b.AllowSender(context.Background(), &pb.AllowSenderRequest{Account: phone, Sender: phone})
+	}()
+	before := sb.stats.filtered.Load()
+	stream, err := b.Subscribe(ctx, &pb.SubscribeRequest{Accounts: []string{phone}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitSubs(t, sb, 1)
+	defer waitSubs(t, sb, 0)
+	defer cancel()
+	got := make(chan string, 16)
+	go func() {
+		for ev, err := stream.Recv(); err == nil; ev, err = stream.Recv() {
+			got <- ev.GetMessage().GetId()
+		}
+	}()
+	sent, err := a.Send(ctx, &pb.SendRequest{Account: phone, To: phone, Content: &pb.SendRequest_Text{Text: "kapa filtered " + nonce(t)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for sb.stats.filtered.Load() == before {
+		select {
+		case id := <-got:
+			if id == sent.GetId() {
+				t.Fatal("message from a revoked sender was published")
+			}
+		case <-ctx.Done():
+			t.Fatal("device B never received (and filtered) the message")
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	select {
+	case id := <-got:
+		if id == sent.GetId() {
+			t.Fatal("message from a revoked sender was published")
+		}
+	case <-time.After(2 * time.Second):
 	}
 }
 

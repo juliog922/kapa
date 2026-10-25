@@ -46,6 +46,7 @@ func newTestServer() *server {
 	return &server{
 		log: waLog.Noop, health: health.NewServer(),
 		accounts: map[string]*whatsmeow.Client{}, subs: map[*subscriber]struct{}{},
+		allow: map[string]map[string]struct{}{},
 	}
 }
 
@@ -460,6 +461,7 @@ func TestPublishDropsSlowSubscriber(t *testing.T) {
 // when nobody listens: the client is nil, so any download attempt would panic.
 func TestOnMessageNoWorkWithoutSubscribers(t *testing.T) {
 	s := newTestServer()
+	s.remember(testPhone, "34699888777")
 	img := msgEvent("34699888777", &waE2E.Message{ImageMessage: &waE2E.ImageMessage{Mimetype: proto.String("image/jpeg")}})
 	s.onMessage(testPhone, "", nil, img)
 	other := addSub(t, s, &pb.SubscribeRequest{Peers: []string{"34611000000"}}, 4)
@@ -470,6 +472,7 @@ func TestOnMessageNoWorkWithoutSubscribers(t *testing.T) {
 // TestOnMessageDelivers checks the full path for a text message and the discard of groups.
 func TestOnMessageDelivers(t *testing.T) {
 	s := newTestServer()
+	s.remember(testPhone, "34699888777")
 	sub := addSub(t, s, &pb.SubscribeRequest{Accounts: []string{testPhone}}, 4)
 	s.onMessage(testPhone, "", nil, msgEvent("34699888777", &waE2E.Message{Conversation: proto.String("hola")}))
 	ev := next(t, sub)
@@ -486,6 +489,75 @@ func TestOnMessageDelivers(t *testing.T) {
 	// 1:1 messages are counted (text + unsupported sticker), the group is not; one delivery.
 	if r, d := s.stats.received.Load(), s.stats.delivered.Load(); r != 2 || d != 1 {
 		t.Fatalf("received=%d delivered=%d, want 2 and 1", r, d)
+	}
+}
+
+// TestAllowlistFiltering checks deny-by-default publishing and the allowlist RPCs end to end.
+func TestAllowlistFiltering(t *testing.T) {
+	s := newTestServer()
+	s.attach(testPhone, fakeClient(testPhone, false))
+	c := startBuf(t, s)
+	ctx := context.Background()
+	sub := addSub(t, s, &pb.SubscribeRequest{}, 8)
+	hola := msgEvent("34699888777", &waE2E.Message{Conversation: proto.String("hola")})
+
+	s.onMessage(testPhone, "", nil, hola) // unknown sender: dropped before any work
+	empty(t, sub)
+	if s.stats.filtered.Load() != 1 {
+		t.Fatalf("filtered = %d, want 1", s.stats.filtered.Load())
+	}
+	for _, sender := range []string{"+34 699 888 777", "34611000000", "lid:987654"} {
+		if _, err := c.AllowSender(ctx, &pb.AllowSenderRequest{Account: testPhone, Sender: sender}); err != nil {
+			t.Fatalf("AllowSender(%s): %v", sender, err)
+		}
+	}
+	_, _ = c.AllowSender(ctx, &pb.AllowSenderRequest{Account: testPhone, Sender: "34611000000"}) // idempotent
+	list, err := c.ListAllowedSenders(ctx, &pb.ListAllowedSendersRequest{Account: testPhone})
+	if err != nil || strings.Join(list.GetSenders(), ",") != "34611000000,34699888777,lid:987654" {
+		t.Fatalf("ListAllowedSenders = %v, %v", list.GetSenders(), err)
+	}
+	s.onMessage(testPhone, "", nil, hola)
+	if ev := next(t, sub); ev.GetMessage().GetText() != "hola" {
+		t.Fatalf("allowed sender not delivered: %v", ev)
+	}
+	other := msgEvent("34699888777", &waE2E.Message{Conversation: proto.String("x")})
+	s.onMessage("34600999999", "", nil, other) // allowlists are per account
+	empty(t, sub)
+
+	if _, err = c.RevokeSender(ctx, &pb.RevokeSenderRequest{Account: testPhone, Sender: "34699888777"}); err != nil {
+		t.Fatal(err)
+	}
+	s.onMessage(testPhone, "", nil, hola)
+	empty(t, sub)
+	if s.stats.filtered.Load() != 3 {
+		t.Fatalf("filtered = %d, want 3", s.stats.filtered.Load())
+	}
+	if _, err = c.Delete(ctx, &pb.DeleteRequest{Phone: testPhone}); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ = c.ListAllowedSenders(ctx, &pb.ListAllowedSendersRequest{Account: testPhone}); len(list.GetSenders()) != 0 {
+		t.Fatalf("Delete must clear the allowlist, got %v", list.GetSenders())
+	}
+}
+
+// TestAllowlistValidation checks invalid accounts and senders are rejected.
+func TestAllowlistValidation(t *testing.T) {
+	c := startBuf(t, newTestServer())
+	ctx := context.Background()
+	for _, req := range []*pb.AllowSenderRequest{
+		{Account: "nope", Sender: "34699888777"},
+		{Account: testPhone, Sender: "12"},
+		{Account: testPhone, Sender: "lid:"},
+	} {
+		if _, err := c.AllowSender(ctx, req); code(err) != codes.InvalidArgument {
+			t.Errorf("AllowSender(%v) = %v, want InvalidArgument", req, err)
+		}
+	}
+	if _, err := c.RevokeSender(ctx, &pb.RevokeSenderRequest{Account: testPhone, Sender: "x"}); code(err) != codes.InvalidArgument {
+		t.Errorf("RevokeSender: %v", err)
+	}
+	if _, err := c.ListAllowedSenders(ctx, &pb.ListAllowedSendersRequest{Account: "1"}); code(err) != codes.InvalidArgument {
+		t.Errorf("ListAllowedSenders: %v", err)
 	}
 }
 
@@ -704,6 +776,9 @@ func TestStatus(t *testing.T) {
 	s.stats.delivered.Store(5)
 	s.stats.sent.Store(3)
 	s.stats.dropped.Store(1)
+	s.stats.filtered.Store(9)
+	s.remember("34600000003", "34699888777")
+	s.remember("34600000003", "34611000000")
 	addSub(t, s, &pb.SubscribeRequest{}, 1)
 	st, err := startBuf(t, s).Status(context.Background(), &pb.StatusRequest{})
 	if err != nil {
@@ -711,8 +786,12 @@ func TestStatus(t *testing.T) {
 	}
 	if len(st.GetAccounts()) != 2 || st.GetAccounts()[0].GetPhone() != "34600000001" ||
 		st.GetAccounts()[0].GetState() != pb.AccountState_ACCOUNT_STATE_PAIRING ||
-		st.GetAccounts()[1].GetState() != pb.AccountState_ACCOUNT_STATE_DISCONNECTED {
+		st.GetAccounts()[1].GetState() != pb.AccountState_ACCOUNT_STATE_DISCONNECTED ||
+		st.GetAccounts()[0].GetAllowedSenders() != 0 || st.GetAccounts()[1].GetAllowedSenders() != 2 {
 		t.Fatalf("unexpected accounts: %v", st.GetAccounts())
+	}
+	if st.GetMessagesFiltered() != 9 {
+		t.Fatalf("filtered = %d, want 9", st.GetMessagesFiltered())
 	}
 	if !strings.HasPrefix(st.GetWhatsmeowVersion(), "v") || len(versionParts(st.GetWaVersion())) != 3 || st.GetOutdated() {
 		t.Fatalf("unexpected versions: %v", st)
@@ -727,9 +806,9 @@ func TestStatus(t *testing.T) {
 func TestStatusReport(t *testing.T) {
 	ours := store.GetWAVersion().String()
 	base := func(states ...pb.AccountState) *pb.StatusResponse {
-		st := &pb.StatusResponse{WaVersion: ours, StartedAt: timestamppb.Now(), MessagesReceived: 4, MessagesSent: 2}
+		st := &pb.StatusResponse{WaVersion: ours, StartedAt: timestamppb.Now(), MessagesReceived: 4, MessagesSent: 2, MessagesFiltered: 1}
 		for i, state := range states {
-			st.Accounts = append(st.Accounts, &pb.Account{Phone: fmt.Sprintf("3460000000%d", i), State: state})
+			st.Accounts = append(st.Accounts, &pb.Account{Phone: fmt.Sprintf("3460000000%d", i), State: state, AllowedSenders: uint32(i)})
 		}
 		return st
 	}
@@ -743,8 +822,9 @@ func TestStatusReport(t *testing.T) {
 		want     int
 		contains string
 	}{
-		{"healthy", base(connected), ours, 0, "received 4 · delivered 0 · sent 2"},
-		{"offline account", base(connected, offline), ours, 2, "offline (reconnecting)"},
+		{"healthy", base(connected), ours, 0, "received 4 · filtered 1 · delivered 0 · sent 2"},
+		{"empty allowlist is visible", base(connected), ours, 0, "no allowed senders (nothing is published)"},
+		{"offline account", base(connected, offline), ours, 2, "1 allowed senders  <- offline (reconnecting)"},
 		{"pairing is not a warning", base(pb.AccountState_ACCOUNT_STATE_PAIRING), ours, 0, "PAIRING"},
 		{"upstream ahead", base(connected), "9.9.9", 2, "UPDATE AVAILABLE"},
 		{"outdated wins", outdated, "9.9.9", 1, "OUTDATED"},
@@ -936,6 +1016,10 @@ func TestConcurrentAccountsAndSubscribers(t *testing.T) {
 					_, _ = stream.Recv()
 				}
 				_, _ = c.Status(ctx, &pb.StatusRequest{})
+				_, _ = c.AllowSender(ctx, &pb.AllowSenderRequest{Account: testPhone, Sender: "34699888777"})
+				s.onMessage(testPhone, "", nil, msgEvent("34699888777", &waE2E.Message{Conversation: proto.String("x")}))
+				_, _ = c.RevokeSender(ctx, &pb.RevokeSenderRequest{Account: testPhone, Sender: "34699888777"})
+				_, _ = c.ListAllowedSenders(ctx, &pb.ListAllowedSendersRequest{Account: testPhone})
 				cancel()
 			}
 		})

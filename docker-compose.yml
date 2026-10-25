@@ -67,6 +67,42 @@ services:
     networks:
       - kapa
 
+  # Core service (Rust): Gmail accounts and admin mailbox. No network port: other modules
+  # live inside it. Secrets are mounted read-only; they must be owned by uid 65532 (the
+  # container user) with mode 0400 - `make deploy-secrets` does that on the server.
+  core:
+    build:
+      context: ./services/core
+      target: runtime
+    image: kapa-core:${KAPA_ENV:-local}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      PGSSLMODE: disable
+      ACCOUNTS_FILE: /run/secrets/core/accounts.${CORE_SECRETS:-prod}.env
+      ADMIN_FILE: /run/secrets/core/admin.${CORE_SECRETS:-prod}.env
+      STATUS_FILE: /tmp/core.status
+    volumes:
+      - ./services/core/secrets:/run/secrets/core:ro
+    labels:
+      # make monitor runs this inside the container: Gmail accounts, counters, delivery delay
+      kapa.status: "/core --status"
+    healthcheck:
+      test: ["CMD", "/core", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - kapa
+
   # Web log viewer: live tail, search, filter and per-service views.
   # Bound to localhost; reach it from your machine with `make deploy-logs-ui`.
   dozzle:

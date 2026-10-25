@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -57,6 +58,14 @@ const pairDisplayName = "Chrome (Linux)"
 // maxMsgSize bounds gRPC messages: WhatsApp media is at most 16 MiB plus framing.
 const maxMsgSize = 32 << 20
 
+// allowlistSchema stores the senders whose messages are published, per account (deny by default).
+const allowlistSchema = `CREATE TABLE IF NOT EXISTS whatsapp_allowed_senders (
+	account    TEXT NOT NULL,
+	sender     TEXT NOT NULL,
+	created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+	PRIMARY KEY (account, sender)
+)`
+
 // upstreamVersionURL is whatsmeow's source of truth for the WhatsApp Web protocol version
 // (a variable so tests can point it at a local server).
 var upstreamVersionURL = "https://raw.githubusercontent.com/tulir/whatsmeow/main/store/clientpayload.go"
@@ -80,11 +89,15 @@ type server struct {
 
 	subMu sync.RWMutex
 	subs  map[*subscriber]struct{}
+
+	allowDB *sql.DB // nil in unit tests: the allowlist then lives in memory only
+	allowMu sync.RWMutex
+	allow   map[string]map[string]struct{} // account -> allowed senders
 }
 
 // stats are the traffic counters reported by Status (lock-free).
 type stats struct {
-	received, delivered, sent, dropped atomic.Uint64
+	received, delivered, sent, dropped, filtered atomic.Uint64
 }
 
 // subscriber is one Subscribe stream and its filters; an empty filter matches everything.
@@ -156,10 +169,66 @@ func newServer(ctx context.Context, dsn string, log waLog.Logger, selfChat bool)
 	if err != nil {
 		return nil, fmt.Errorf("session store: %w", err)
 	}
-	return &server{
+	s := &server{
 		db: db, log: log, health: health.NewServer(), selfChat: selfChat, started: time.Now(),
 		accounts: map[string]*whatsmeow.Client{}, subs: map[*subscriber]struct{}{},
-	}, nil
+		allow: map[string]map[string]struct{}{},
+	}
+	if s.allowDB, err = sql.Open("postgres", dsn); err != nil {
+		return nil, fmt.Errorf("allowlist store: %w", err)
+	}
+	return s, s.loadAllowlist(ctx)
+}
+
+// loadAllowlist creates the allowlist table if needed and loads it into memory.
+func (s *server) loadAllowlist(ctx context.Context) error {
+	if _, err := s.allowDB.ExecContext(ctx, allowlistSchema); err != nil {
+		return fmt.Errorf("allowlist schema: %w", err)
+	}
+	rows, err := s.allowDB.QueryContext(ctx, `SELECT account, sender FROM whatsapp_allowed_senders`)
+	if err != nil {
+		return fmt.Errorf("load allowlist: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var account, sender string
+		if err = rows.Scan(&account, &sender); err != nil {
+			return fmt.Errorf("load allowlist: %w", err)
+		}
+		s.remember(account, sender)
+	}
+	return rows.Err()
+}
+
+// remember adds sender to the in-memory allowlist of account.
+func (s *server) remember(account, sender string) {
+	s.allowMu.Lock()
+	defer s.allowMu.Unlock()
+	set := s.allow[account]
+	if set == nil {
+		set = map[string]struct{}{}
+		s.allow[account] = set
+	}
+	set[sender] = struct{}{}
+}
+
+// allowed reports whether messages of sender to account may be published (deny by default).
+func (s *server) allowed(account, sender string) bool {
+	s.allowMu.RLock()
+	defer s.allowMu.RUnlock()
+	_, ok := s.allow[account][sender]
+	return ok
+}
+
+// persist runs an allowlist statement on PostgreSQL (no-op when the allowlist is memory-only).
+func (s *server) persist(ctx context.Context, query string, args ...any) error {
+	if s.allowDB == nil {
+		return nil
+	}
+	if _, err := s.allowDB.ExecContext(ctx, query, args...); err != nil {
+		return status.Errorf(codes.Internal, "allowlist: %v", err)
+	}
+	return nil
 }
 
 // grpcServer builds the gRPC server exposing WhatsAppService and the standard health service.
@@ -290,6 +359,10 @@ func (s *server) onMessage(account, ownLID string, cli *whatsmeow.Client, m *eve
 		return
 	}
 	s.stats.received.Add(1)
+	if !s.allowed(account, peer) {
+		s.stats.filtered.Add(1)
+		return
+	}
 	if !s.wanted(account, peer) {
 		return
 	}
@@ -492,20 +565,35 @@ func newSubscriber(req *pb.SubscribeRequest) (*subscriber, error) {
 	return &subscriber{accounts: accounts, peers: peers, ch: make(chan *pb.SubscribeResponse, eventBuffer), gone: make(chan struct{})}, nil
 }
 
-// phoneSet parses a list of phone numbers ("lid:<id>" entries are kept verbatim).
+// phoneSet parses a list of senders (see parseSender).
 func phoneSet(raw []string) (map[string]struct{}, error) {
 	set := make(map[string]struct{}, len(raw))
 	for _, r := range raw {
-		p := r
-		if !strings.HasPrefix(r, "lid:") {
-			var err error
-			if p, err = parsePhone(r); err != nil {
-				return nil, err
-			}
+		p, err := parseSender(r)
+		if err != nil {
+			return nil, err
 		}
 		set[p] = struct{}{}
 	}
 	return set, nil
+}
+
+// parseSender normalizes a sender: a phone number, or "lid:<id>" kept verbatim.
+func parseSender(raw string) (string, error) {
+	if strings.HasPrefix(raw, "lid:") && len(raw) > len("lid:") {
+		return raw, nil
+	}
+	return parsePhone(raw)
+}
+
+// parseAllow validates the account and sender of an allowlist request.
+func parseAllow(account, sender string) (string, string, error) {
+	a, err := parsePhone(account)
+	if err != nil {
+		return "", "", err
+	}
+	p, err := parseSender(sender)
+	return a, p, err
 }
 
 // parsePhone normalizes an international phone number to digits ("+", spaces and dashes are
@@ -655,6 +743,12 @@ func (s *server) Delete(ctx context.Context, req *pb.DeleteRequest) (*pb.DeleteR
 			return nil, status.Errorf(codes.Internal, "wipe session: %v", err)
 		}
 	}
+	if err = s.persist(ctx, `DELETE FROM whatsapp_allowed_senders WHERE account = $1`, phone); err != nil {
+		return nil, err
+	}
+	s.allowMu.Lock()
+	delete(s.allow, phone)
+	s.allowMu.Unlock()
 	s.forget(phone, cli)
 	s.notify(phone, pb.AccountState_ACCOUNT_STATE_DELETED, "")
 	return &pb.DeleteResponse{}, nil
@@ -740,16 +834,65 @@ func (s *server) Status(context.Context, *pb.StatusRequest) (*pb.StatusResponse,
 		WhatsmeowVersion: whatsmeowVersion(), WaVersion: store.GetWAVersion().String(), Outdated: s.outdated.Load(),
 		StartedAt: timestamppb.New(s.started), MessagesReceived: s.stats.received.Load(),
 		MessagesDelivered: s.stats.delivered.Load(), MessagesSent: s.stats.sent.Load(), SubscribersDropped: s.stats.dropped.Load(),
+		MessagesFiltered: s.stats.filtered.Load(),
 	}
 	s.subMu.RLock()
 	out.Subscribers = uint32(len(s.subs)) //nolint:gosec // number of open streams, far below 2^32
 	s.subMu.RUnlock()
 	s.mu.RLock()
+	s.allowMu.RLock()
 	for phone, cli := range s.accounts {
-		out.Accounts = append(out.Accounts, &pb.Account{Phone: phone, State: stateOf(cli), Lid: cli.Store.LID.User})
+		allowed := uint32(len(s.allow[phone])) //nolint:gosec // allowlist size, far below 2^32
+		out.Accounts = append(out.Accounts, &pb.Account{Phone: phone, State: stateOf(cli), Lid: cli.Store.LID.User, AllowedSenders: allowed})
 	}
+	s.allowMu.RUnlock()
 	s.mu.RUnlock()
 	slices.SortFunc(out.Accounts, func(a, b *pb.Account) int { return strings.Compare(a.Phone, b.Phone) })
+	return out, nil
+}
+
+// AllowSender adds a sender to an account's allowlist (PostgreSQL first, then memory).
+func (s *server) AllowSender(ctx context.Context, req *pb.AllowSenderRequest) (*pb.AllowSenderResponse, error) {
+	account, sender, err := parseAllow(req.GetAccount(), req.GetSender())
+	if err != nil {
+		return nil, err
+	}
+	err = s.persist(ctx, `INSERT INTO whatsapp_allowed_senders (account, sender) VALUES ($1, $2) ON CONFLICT DO NOTHING`, account, sender)
+	if err != nil {
+		return nil, err
+	}
+	s.remember(account, sender)
+	return &pb.AllowSenderResponse{}, nil
+}
+
+// RevokeSender removes a sender from an account's allowlist (PostgreSQL first, then memory).
+func (s *server) RevokeSender(ctx context.Context, req *pb.RevokeSenderRequest) (*pb.RevokeSenderResponse, error) {
+	account, sender, err := parseAllow(req.GetAccount(), req.GetSender())
+	if err != nil {
+		return nil, err
+	}
+	if err = s.persist(ctx, `DELETE FROM whatsapp_allowed_senders WHERE account = $1 AND sender = $2`, account, sender); err != nil {
+		return nil, err
+	}
+	s.allowMu.Lock()
+	delete(s.allow[account], sender)
+	s.allowMu.Unlock()
+	return &pb.RevokeSenderResponse{}, nil
+}
+
+// ListAllowedSenders returns an account's allowlist, sorted.
+func (s *server) ListAllowedSenders(_ context.Context, req *pb.ListAllowedSendersRequest) (*pb.ListAllowedSendersResponse, error) {
+	account, err := parsePhone(req.GetAccount())
+	if err != nil {
+		return nil, err
+	}
+	s.allowMu.RLock()
+	out := &pb.ListAllowedSendersResponse{Senders: make([]string, 0, len(s.allow[account]))}
+	for sender := range s.allow[account] {
+		out.Senders = append(out.Senders, sender)
+	}
+	s.allowMu.RUnlock()
+	slices.Sort(out.Senders)
 	return out, nil
 }
 
@@ -874,8 +1017,8 @@ func statusReport(st *pb.StatusResponse, upstream string, upstreamErr error) (st
 	var b strings.Builder
 	uptime := time.Since(st.GetStartedAt().AsTime()).Truncate(time.Second)
 	fmt.Fprintf(&b, "whatsmeow %s · protocol %s · up %s\n", st.GetWhatsmeowVersion(), st.GetWaVersion(), uptime)
-	fmt.Fprintf(&b, "streams %d · received %d · delivered %d · sent %d · dropped %d\n", st.GetSubscribers(),
-		st.GetMessagesReceived(), st.GetMessagesDelivered(), st.GetMessagesSent(), st.GetSubscribersDropped())
+	fmt.Fprintf(&b, "streams %d · received %d · filtered %d · delivered %d · sent %d · dropped %d\n", st.GetSubscribers(),
+		st.GetMessagesReceived(), st.GetMessagesFiltered(), st.GetMessagesDelivered(), st.GetMessagesSent(), st.GetSubscribersDropped())
 	code := accountsReport(&b, st.GetAccounts())
 	code = max(code, protocolReport(&b, st, upstream, upstreamErr))
 	return b.String(), code
@@ -886,9 +1029,12 @@ func accountsReport(b *strings.Builder, accounts []*pb.Account) int {
 	fmt.Fprintf(b, "%d account(s)\n", len(accounts))
 	code := 0
 	for _, a := range accounts {
-		note := ""
+		note := fmt.Sprintf(" · %d allowed senders", a.GetAllowedSenders())
+		if a.GetAllowedSenders() == 0 {
+			note = " · no allowed senders (nothing is published)"
+		}
 		if a.GetState() == pb.AccountState_ACCOUNT_STATE_DISCONNECTED {
-			note, code = "  <- offline (reconnecting)", 2
+			note, code = note+"  <- offline (reconnecting)", 2
 		}
 		fmt.Fprintf(b, "  +%s %s%s\n", a.GetPhone(), strings.TrimPrefix(a.GetState().String(), "ACCOUNT_STATE_"), note)
 	}

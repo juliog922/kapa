@@ -16,3 +16,5 @@
 /services/*/.golangci.yml
 /proto/
 /scripts/ci/
+# Secrets are never rsynced: production ones are uploaded separately (and protected from --delete)
+/services/*/secrets/

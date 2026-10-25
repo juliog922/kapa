@@ -23,12 +23,12 @@ service WhatsAppService {
   // RESOURCE_EXHAUSTED means WhatsApp rate-limits code requests for that number:
   // wait (usually hours) before retrying, every attempt can extend the block.
   rpc Login(LoginRequest) returns (LoginResponse);
-  // Logout unlinks the account from WhatsApp and wipes its session.
+  // Logout unlinks the account from WhatsApp and wipes its session (the allowlist is kept).
   // Fails with FAILED_PRECONDITION while pairing is still pending.
   rpc Logout(LogoutRequest) returns (LogoutResponse);
   // Delete removes the account unconditionally: it tries to unlink it, and
   // wipes the local session even if WhatsApp is unreachable or the session is
-  // already invalid. Also cancels a pending pairing.
+  // already invalid. Also cancels a pending pairing and deletes the account's allowlist.
   rpc Delete(DeleteRequest) returns (DeleteResponse);
   // Send delivers a text, image or audio message to a phone number.
   rpc Send(SendRequest) returns (SendResponse);
@@ -39,6 +39,14 @@ service WhatsAppService {
   rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);
   // Status reports the accounts and the WhatsApp protocol versions in use.
   rpc Status(StatusRequest) returns (StatusResponse);
+  // AllowSender adds a sender to an account's allowlist. Messages are only published
+  // from allowed senders (deny by default); others are dropped and counted as filtered.
+  // Stored in PostgreSQL. Idempotent.
+  rpc AllowSender(AllowSenderRequest) returns (AllowSenderResponse);
+  // RevokeSender removes a sender from an account's allowlist. Idempotent.
+  rpc RevokeSender(RevokeSenderRequest) returns (RevokeSenderResponse);
+  // ListAllowedSenders returns an account's allowlist, sorted.
+  rpc ListAllowedSenders(ListAllowedSendersRequest) returns (ListAllowedSendersResponse);
 }
 
 // AccountState is the lifecycle state of a linked account.
@@ -244,6 +252,8 @@ message StatusResponse {
   uint64 messages_sent = 9;
   // Subscribers disconnected for falling behind.
   uint64 subscribers_dropped = 10;
+  // Messages dropped because their sender is not on the account's allowlist.
+  uint64 messages_filtered = 11;
 }
 
 // Account is one known account.
@@ -254,4 +264,40 @@ message Account {
   AccountState state = 2;
   // The account's own WhatsApp LID, once linked.
   string lid = 3;
+  // Number of senders on the account's allowlist (0 = nothing is published).
+  uint32 allowed_senders = 4;
+}
+
+// AllowSenderRequest adds a sender to an account's allowlist.
+message AllowSenderRequest {
+  // Phone number of the account.
+  string account = 1;
+  // Phone number of the sender (or "lid:<id>" for senders whose phone is hidden).
+  string sender = 2;
+}
+
+// AllowSenderResponse is empty on success.
+message AllowSenderResponse {}
+
+// RevokeSenderRequest removes a sender from an account's allowlist.
+message RevokeSenderRequest {
+  // Phone number of the account.
+  string account = 1;
+  // Phone number of the sender (or "lid:<id>").
+  string sender = 2;
+}
+
+// RevokeSenderResponse is empty on success.
+message RevokeSenderResponse {}
+
+// ListAllowedSendersRequest selects the account.
+message ListAllowedSendersRequest {
+  // Phone number of the account.
+  string account = 1;
+}
+
+// ListAllowedSendersResponse is the account's allowlist.
+message ListAllowedSendersResponse {
+  // Allowed senders, sorted.
+  repeated string senders = 1;
 }

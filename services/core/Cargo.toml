@@ -1,0 +1,42 @@
+[package]
+name = "kapa-core"
+version = "0.1.0"
+edition = "2024"
+description = "Kapa core service: Gmail accounts (watch + send), admin mailbox, allowlists"
+license = "MIT"
+publish = false
+
+[lib]
+name = "kapa_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "core"
+path = "src/main.rs"
+
+[[bench]]
+name = "hot"
+harness = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[dependencies]
+mail-parser = { version = "1.0.0", default-features = false }
+ring = "0.17.14"
+sqlx = { version = "0.9.0", default-features = false, features = ["postgres", "runtime-tokio"] }
+tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal", "fs"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1.0.11"
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+missing_docs_in_private_items = "deny"
+unwrap_used = "deny"
+module_name_repetitions = "allow"
