@@ -70,7 +70,7 @@ endef
 
 .PHONY: help run stop clean format lint check-docs test test-infra test-clean bench deps \
         update-whatsmeow pair-test \
-        deploy deploy-secrets deploy-check-sqlserver deploy-sample-sqlserver deploy-sync-sqlserver deploy-stop deploy-clean deploy-logs deploy-logs-ui deploy-env deploy-setup monitor \
+        deploy deploy-secrets deploy-check-sqlserver deploy-sample-sqlserver deploy-sync-sqlserver sage-summary deploy-stop deploy-clean deploy-logs deploy-logs-ui deploy-env deploy-setup monitor \
         runner runner-start runner-stop runner-status runner-logs \
         check-env check-docker
 
@@ -178,6 +178,10 @@ deploy-sync-sqlserver: ## Live Sage check on the host, then export schema + mask
 
 deploy-sample-sqlserver: ## Sage schema + masked sample -> services/core/testdata/sage.local.json
 	@bash scripts/deploy-sample-sqlserver.sh
+
+sage-summary: ## Rebuild services/core/testdata/sage-summary.local.md from the Sage fixture
+	@python3 scripts/sage-summary.py services/core/testdata/sage.local.json services/core/testdata/sage-summary.local.md
+	@echo "services/core/testdata/sage-summary.local.md"
 
 deploy-secrets: ## Upload services/*/secrets/*.prod.env to the host (asks for sudo there)
 	@bash scripts/deploy-secrets.sh

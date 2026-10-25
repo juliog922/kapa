@@ -3,20 +3,31 @@
 //! Skipped loudly when the file is absent (CI, fresh clones). These tests guard what core
 //! assumes about Sage: the schema it relies on, coherent mock data, and masked personal data.
 
+use kapa_core::sample::FORMAT;
 use kapa_core::sqlserver::{Found, SAGE_TABLES, compare};
+use kapa_core::stats::personal;
 use serde_json::Value;
 use std::collections::HashSet;
 
 /// Path of the fixture.
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/sage.local.json");
 
-/// The parsed fixture, or `None` (with a notice) when it has not been exported.
+/// The parsed fixture, or `None` (with a notice) when it is absent or was written by an older
+/// core (an older layout cannot be judged by today's expectations: it needs a re-export).
 fn fixture() -> Option<Value> {
     let Ok(text) = std::fs::read_to_string(FIXTURE) else {
         eprintln!("SAGE FIXTURE SKIPPED: {FIXTURE} not found (export it with `make deploy-sync-sqlserver`)");
         return None;
     };
-    Some(serde_json::from_str(&text).unwrap_or_else(|e| panic!("{FIXTURE} is not valid JSON: {e}")))
+    let fx: Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{FIXTURE} is not valid JSON: {e}"));
+    let format = fx["format"].as_u64().unwrap_or(1);
+    if format < u64::from(FORMAT) {
+        eprintln!(
+            "SAGE FIXTURE SKIPPED: STALE fixture (format {format}, this core expects {FORMAT}): deploy the current core, then `make deploy-sync-sqlserver`"
+        );
+        return None;
+    }
+    Some(fx)
 }
 
 /// Rows of one sample section.
@@ -40,7 +51,7 @@ const ORDER: [&str; 4] = ["CodigoEmpresa", "EjercicioPedido", "SeriePedido", "Nu
 #[test]
 fn fixture_has_the_exported_shape() {
     let Some(fx) = fixture() else { return };
-    for field in ["generated_at", "server", "database", "masked", "orders", "schema", "sample"] {
+    for field in ["format", "generated_at", "server", "database", "masked", "orders", "schema", "stats", "sample"] {
         assert!(!fx[field].is_null(), "fixture misses {field}");
     }
     for section in ["CabeceraPedidoCliente", "LineasPedidoCliente", "Clientes", "Articulos", "ArticulosCatalogo"] {
@@ -75,6 +86,24 @@ fn schema_has_every_column_core_relies_on() {
         assert!(diff.missing.is_empty() && diff.wrong_type.is_empty(), "{}: {diff:?}", table.name);
         if !diff.shorter.is_empty() {
             eprintln!("sage fixture: {} texts shorter than core assumes: {:?}", table.name, diff.shorter);
+        }
+    }
+}
+
+#[test]
+fn statistics_cover_every_column_and_never_expose_personal_values() {
+    let Some(fx) = fixture() else { return };
+    for table in &SAGE_TABLES {
+        let stats = &fx["stats"][table.name];
+        assert!(stats["rows"].as_i64().is_some_and(|n| n > 0), "{}: no row count", table.name);
+        for &(column, _, _) in table.columns {
+            let metrics = &stats["columns"][column];
+            assert!(metrics.is_object(), "{}.{column} has no statistics", table.name);
+            if personal(column) {
+                for value in ["min", "max", "top"] {
+                    assert!(metrics[value].is_null(), "{}.{column} exposes {value}", table.name);
+                }
+            }
         }
     }
 }

@@ -71,8 +71,13 @@ const SAMPLE_ARTICLES: &str = concat!(
 const SAMPLE_CATALOG: &str =
     concat!("SELECT TOP (@P1) ", article_columns!(), " FROM Articulos a WITH (NOLOCK) WHERE a.K_BOT = -1 ORDER BY a.FechaAlta DESC");
 
+/// Version of the exported JSON layout. Bump it whenever the layout changes, so tests skip
+/// (asking for a re-export) fixtures written by an older core instead of failing on them.
+/// 1: schema + sample · 2: + stats.
+pub const FORMAT: u32 = 2;
+
 /// Columns holding personal data (masked unless the export is raw).
-const PERSONAL: [&str; 9] = ["Nombre", "Telefono", "Telefono2", "Telefono3", "EMail1", "EMail2", "Domicilio", "CifDni", "RazonSocial"];
+pub const PERSONAL: [&str; 9] = ["Nombre", "Telefono", "Telefono2", "Telefono3", "EMail1", "EMail2", "Domicilio", "CifDni", "RazonSocial"];
 
 /// Days from 1900-01-01 (SQL Server `datetime` epoch) to 1970-01-01.
 const DAYS_1900: i64 = -25_567;
@@ -241,6 +246,17 @@ async fn table_schema(session: &mut ReadOnlySession, table: &str) -> Result<Stri
     Ok(format!("{{\"schema\": {schema}, \"rows_approx\": {rows}, \"columns\": [\n{}\n      ]}}", lines.join(",\n")))
 }
 
+/// The `"schema"` and `"stats"` entries of every Sage table core reads.
+async fn schema_and_stats(session: &mut ReadOnlySession) -> Result<(String, String)> {
+    let (mut schema, mut stats) = (Vec::new(), Vec::new());
+    for table in &SAGE_TABLES {
+        schema.push(format!("    {}: {}", json_str(table.name), table_schema(session, table.name).await?));
+        let found = sqlserver::check_table(session, table.name).await?.columns;
+        stats.push(format!("    {}: {}", json_str(table.name), crate::stats::table_stats(session, table, &found).await?));
+    }
+    Ok((schema.join(",\n"), stats.join(",\n")))
+}
+
 /// Exports the schema of every Sage table core reads and a coherent sample of `orders`
 /// latest orders as JSON. Returns the JSON and a one-line summary.
 ///
@@ -250,17 +266,14 @@ pub async fn export(cfg: &sqlserver::Config, orders: i32, mask: bool) -> Result<
     let mut session = Box::pin(sqlserver::connect(cfg)).await?;
     let (version, database, login) = sqlserver::server_info(&mut session).await?;
     let mut out = format!(
-        "{{\n  \"generated_at\": {},\n  \"server\": {},\n  \"database\": {},\n  \"login\": {},\n  \"masked\": {mask},\n  \"orders\": {orders},\n  \"schema\": {{\n",
+        "{{\n  \"format\": {FORMAT},\n  \"generated_at\": {},\n  \"server\": {},\n  \"database\": {},\n  \"login\": {},\n  \"masked\": {mask},\n  \"orders\": {orders},\n  \"schema\": {{\n",
         json_str(&mail::rfc3339(crate::now_ms() / 1000)),
         json_str(&version),
         json_str(&database),
         json_str(&login)
     );
-    let mut tables = Vec::new();
-    for table in &SAGE_TABLES {
-        tables.push(format!("    {}: {}", json_str(table.name), table_schema(&mut session, table.name).await?));
-    }
-    let _ = write!(out, "{}\n  }},\n  \"sample\": {{\n", tables.join(",\n"));
+    let (schema, stats) = schema_and_stats(&mut session).await?;
+    let _ = write!(out, "{schema}\n  }},\n  \"stats\": {{\n{stats}\n  }},\n  \"sample\": {{\n");
     let sections: [(&str, &'static str); 5] = [
         ("CabeceraPedidoCliente", SAMPLE_HEADERS),
         ("LineasPedidoCliente", SAMPLE_LINES),
