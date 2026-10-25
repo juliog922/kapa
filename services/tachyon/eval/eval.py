@@ -10,8 +10,10 @@ on the deployment host over SSH (make deploy-tachyon-eval), or here (EVAL_LOCAL=
 Results are per machine (results/<machine>/): GPUs differ in speed, and greedy answers may differ
 in floating point. EVAL_BENCH=0 runs the checks only. Standard library only.
 
-Checks:   answers fixed by construction (arithmetic, a generated red image, obvious intents,
-          product retrieval) must be right.
+Checks:   Gemma's answers fixed by construction (arithmetic, generated images, real speech) must be
+          right. Laya and the embeddings are classifiers: they are scored on labelled sets
+          (DECIDE_MIN, EMBED_MIN), each miss listed. A new order is intent `pedido` (precision and
+          recall); catalog text is embedded normalized (both measured on OMEN16, see the notes).
 Goldens:  Gemma decodes greedily, so its answers are deterministic: the first run records them in
           expected.json for review; later runs require the same answers (APPROVE=1 accepts changes).
 Bench:    the engine's own prefill/decode timings for chat; end-to-end latency for the rest, as
@@ -205,36 +207,81 @@ def media_cases(report, have):
 INTENT = {"type": "choice", "instructions": "¿Qué quiere el cliente con este mensaje?",
           "criteria": {"pedido": "pide productos o cantidades para comprar", "incidencia": "queja, rotura, error, devolución o abono",
                        "consulta": "pregunta por stock, precio, plazos o información", "saludo": "saluda, agradece o se despide sin pedir nada"}}
-ORDER = {"type": "noul", "instructions": "El cliente está haciendo un pedido de productos."}
+# A new order is intent `pedido`. A separate yes/no question ("noul") was measured on OMEN16 and
+# rejected: 12/16, e.g. "Perfecto, recibido. Un saludo" scored 0.99, while the intent caught every
+# order with no false one. One question per message is also one computation less.
+# Labelled B2B messages (intent, is a new order), 4 per intent, hard cases included.
 MESSAGES = [("pedido", True, "Hola, ponme 6 cajas de champú Kativa de keratina y 2 de mascarilla de karité para el jueves."),
             ("pedido", True, "Buenas, necesito 24 adhesivos de pestañas Ardell oscuro y 12 del transparente, gracias"),
+            ("pedido", True, "Mándame lo mismo que la última vez pero el doble de esmaltes rojos"),
+            ("pedido", True, "Buenos días! Para esta semana: 3 kits de alisado y 10 champús de rizos"),
             ("incidencia", False, "Me ha llegado el pedido con dos botes rotos, quiero que me lo abonéis."),
+            ("incidencia", False, "En la factura de ayer me habéis cobrado 12 mascarillas y solo pedí 6"),
+            ("incidencia", False, "El champú que me enviasteis está caducado, ¿cómo lo devuelvo?"),
+            ("incidencia", False, "Todavía no me ha llegado el pedido del lunes"),
             ("consulta", False, "Buenos días, ¿tenéis stock del kit de alisado de keratina? ¿A qué precio me sale?"),
-            ("saludo", False, "Muchas gracias, que tengáis buen fin de semana")]
+            ("consulta", False, "¿Cuándo os llega otra vez el adhesivo transparente de Ardell?"),
+            ("consulta", False, "¿Qué diferencia hay entre la mascarilla de karité y la de argán?"),
+            ("consulta", False, "¿Hacéis envíos a Canarias? ¿Cuánto tardan?"),
+            ("saludo", False, "Muchas gracias, que tengáis buen fin de semana"),
+            ("saludo", False, "Perfecto, recibido. Un saludo"),
+            ("saludo", False, "Hola Laura, ¿qué tal todo por ahí?"),
+            ("saludo", False, "Gracias por avisar 👍")]
+# Minimum accuracy over MESSAGES: a product requirement (raise it as the questions improve).
+DECIDE_MIN = 0.85
+
+
+def decide_one(i):
+    """The intent Laya chooses for MESSAGES[i], or None after the error text."""
+    c = tachyon("decide", DECIDE, f"{BOX}/laya-{i}.json")
+    return json.loads(c.out)["intent"]["choice"] if c.rc == 0 else None
+
+
+def order_scores(pairs):
+    """Precision and recall of `pedido` (a new order) over (expected, got) intents."""
+    hits = sum(1 for want, got in pairs if want == got == "pedido")
+    predicted = sum(1 for _, got in pairs if got == "pedido")
+    actual = sum(1 for want, _ in pairs if want == "pedido")
+    return hits, predicted, actual
 
 
 def decide_cases(report):
-    """Laya on customer messages whose intent is obvious: the choice and the order flag must match."""
-    files = {f"laya-{i}.json": json.dumps({"state": text, "questions": {"intent": INTENT, "order": ORDER}}).encode()
-             for i, (_, _, text) in enumerate(MESSAGES)}
-    upload(files)
-    for i, (intent, is_order, text) in enumerate(MESSAGES):
-        c = tachyon("decide", DECIDE, f"{BOX}/laya-{i}.json")
-        if c.rc != 0:
-            report.check(f"decide.{i}", False, c.err[-200:])
-            continue
-        r = json.loads(c.out)
-        got, p = r["intent"]["choice"], r["order"]["noul"]
-        report.check(f"decide.{i} {intent}", got == intent and (p > 0.5) == is_order, f"{got} (order {p:.2f}): {text[:50]}")
+    """Laya on labelled customer messages: intent accuracy, and pedido precision and recall."""
+    upload({f"laya-{i}.json": json.dumps({"state": text, "questions": {"intent": INTENT}}).encode()
+            for i, (_, _, text) in enumerate(MESSAGES)})
+    pairs = []
+    for i, (intent, _, text) in enumerate(MESSAGES):
+        got = decide_one(i)
+        if got is None:
+            report.check(f"decide.{i}", False, "Laya gave no answer")
+        elif got != intent:
+            report.say(f"  miss: {text[:60]!r}: {got}, expected {intent}")
+        pairs.append((intent, got))
         report.golden(f"decide.{i}", got)
+    n, right = len(MESSAGES), sum(1 for want, got in pairs if want == got)
+    hits, predicted, actual = order_scores(pairs)
+    report.check("decide intent accuracy", right / n >= DECIDE_MIN, f"{right}/{n} (minimum {DECIDE_MIN:.0%})")
+    report.check("new order (pedido) precision", predicted and hits / predicted >= DECIDE_MIN, f"{hits}/{predicted} orders were orders")
+    report.check("new order (pedido) recall", actual and hits / actual >= DECIDE_MIN, f"{hits}/{actual} orders caught")
 
 
+# Product descriptions as Sage stores them (upper case), hard negatives included.
 PRODUCTS = ["KATIVA KARITE COCO MARULA MASCARILLA 300ML", "KERATIN ANTIFRIZZ XTRA SHINE ALISADO SIN PLANCHA",
             "ARDELL ADHESIVO PESTAÑAS LASHTITE OSCURO 22ML", "CHAMPU RIZOS DEFINIDOS SIN SULFATOS 300ML",
-            "ESMALTE DE UÑAS ROJO PASION 15ML"]
+            "ESMALTE DE UÑAS ROJO PASION 15ML", "ACONDICIONADOR REPARADOR ARGAN 250ML", "TINTE CAPILAR RUBIO CENIZA 9.1",
+            "QUITAESMALTE SIN ACETONA 125ML", "PESTAÑAS POSTIZAS NATURALES TIRA COMPLETA", "PROTECTOR TERMICO SPRAY PARA PLANCHA 200ML"]
 QUERIES = [("mascarilla nutritiva de manteca de karité", 0), ("alisado de keratina sin plancha", 1),
            ("pegamento para pestañas postizas", 2), ("champú para pelo rizado", 3), ("pintauñas rojo", 4),
-           ("shampoo for curly hair", 3)]
+           ("acondicionador con aceite de argán", 5), ("tinte rubio ceniza", 6), ("quitaesmalte sin acetona", 7),
+           ("pestañas postizas naturales", 8), ("spray protector de calor para la plancha", 9),
+           ("shampoo for curly hair", 3), ("nail polish remover", 7)]
+# Minimum top-1 accuracy of retrieval over QUERIES (normalized text, as core will embed it).
+EMBED_MIN = 0.80
+
+
+def normalize(text):
+    """How core will embed catalog text: lower case, single spaces (Sage descriptions are upper case)."""
+    return " ".join(text.lower().split())
 
 
 def embed(texts, dims=None):
@@ -249,16 +296,31 @@ def cosine(a, b):
     return sum(x * y for x, y in zip(a, b)) / (math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b)))
 
 
-def embed_cases(report):
-    """Retrieval: each query's nearest product must be the right one (also across languages)."""
-    vectors, _ = embed(PRODUCTS + [q for q, _ in QUERIES])
-    report.check("embed.dims", all(len(v) == DIMS.get(EMBED, len(v)) and all(map(math.isfinite, v)) for v in vectors),
-                 f"{len(vectors[0])} dims")
-    products, queries = vectors[: len(PRODUCTS)], vectors[len(PRODUCTS):]
+def retrieval(products, queries):
+    """Top-1 hits and misses of each query against the products (cosine)."""
+    hits, misses = 0, []
     for (query, want), q in zip(QUERIES, queries):
         scores = [cosine(q, p) for p in products]
         best = max(range(len(products)), key=scores.__getitem__)
-        report.check(f"embed {query!r}", best == want, f"→ {PRODUCTS[best]} ({scores[best]:.3f})")
+        hits += best == want
+        if best != want:
+            misses.append(f"{query!r} → {PRODUCTS[best]} ({scores[best]:.3f}), expected {PRODUCTS[want]} ({scores[want]:.3f})")
+    return hits, misses
+
+
+def embed_cases(report):
+    """Retrieval accuracy on the raw Sage descriptions and on normalized text, misses listed."""
+    raw, _ = embed(PRODUCTS + [q for q, _ in QUERIES])
+    norm, _ = embed([normalize(p) for p in PRODUCTS])
+    report.check("embed.dims", all(len(v) == DIMS.get(EMBED, len(v)) and all(map(math.isfinite, v)) for v in raw),
+                 f"{len(raw[0])} dims")
+    queries, n = raw[len(PRODUCTS):], len(QUERIES)
+    raw_hits, _ = retrieval(raw[: len(PRODUCTS)], queries)
+    hits, misses = retrieval(norm, queries)
+    report.say(f"  retrieval top-1: raw upper-case descriptions {raw_hits}/{n} · normalized {hits}/{n}")
+    for miss in misses:
+        report.say(f"  miss: {miss}")
+    report.check("embed retrieval accuracy (normalized)", hits / n >= EMBED_MIN, f"{hits}/{n} (minimum {EMBED_MIN:.0%})")
 
 
 # ---- the bench --------------------------------------------------------------------------------
@@ -335,9 +397,10 @@ def run_bench(report, have):
 
 def save(report):
     """Records new or approved answers for review, and writes the report."""
-    if report.recorded and (report.approve or set(report.recorded) - set(report.expected)):
+    if report.recorded and (report.approve or set(report.recorded) ^ set(report.expected)):
         RESULTS.mkdir(parents=True, exist_ok=True)
-        EXPECTED.write_text(json.dumps({**report.expected, **report.recorded}, indent=1, ensure_ascii=False) + "\n")
+        kept = {k: v if report.approve else report.expected.get(k, v) for k, v in report.recorded.items()}
+        EXPECTED.write_text(json.dumps(kept, indent=1, ensure_ascii=False) + "\n")
         report.say(f"\n• {EXPECTED.relative_to(HERE)} updated: review the answers, then commit it")
     REPORT.parent.mkdir(exist_ok=True)
     REPORT.write_text("\n".join(report.lines) + "\n")

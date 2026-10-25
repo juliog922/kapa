@@ -89,11 +89,25 @@ stay in the external volume `kapa-tachyon-models`, which test cleanups never rem
 
 Every call goes through the daemon, as production's will (`eval/eval.py`, standard library only):
 
-- **Checks** with answers fixed by construction: arithmetic and a capital in Spanish; the color
-  of images it generates (red; blue and yellow); the transcription of real speech (LibriSpeech
-  clips from `~/projects/tachyon`, `TACHYON_SRC=path`); Laya's intent (`pedido`, `incidencia`,
-  `consulta`, `saludo`) and order flag on Kapa-style messages; product retrieval by embeddings,
-  across languages too.
+- **Gemma checks**, strict, with answers fixed by construction: arithmetic and a capital in
+  Spanish; the color of images it generates (red; blue and yellow); the transcription of real
+  speech (LibriSpeech clips from `~/projects/tachyon`, `TACHYON_SRC=path`).
+- **Laya and embeddings are classifiers, scored by accuracy** on labelled sets, every miss
+  listed: 16 B2B messages, 4 per intent (`pedido`, `incidencia`, `consulta`, `saludo`), hard
+  cases included, for the intent and the new-order flag (`DECIDE_MIN`, 85%); 12 product queries,
+  Spanish and English, with hard negatives, for top-1 retrieval (`EMBED_MIN`, 80%). Retrieval is
+  measured on the raw upper-case Sage descriptions and on normalized text (lower case), the form
+  core embeds.
+
+Decisions measured on OMEN16 (RTX 3060), first run of the labelled sets:
+
+| Decision | Measured |
+|---|---|
+| A new order is Laya's intent `pedido`, not a separate yes/no question | yes/no question: 12/16 (*"Perfecto, recibido. Un saludo"* → 0.99); intent: 14/16, every order caught, none false |
+| Catalog text is embedded normalized (lower case, single spaces) | top-1 retrieval: raw upper-case 9/12, normalized 10/12 |
+
+Grow the labelled sets with real (anonymized) messages and queries rather than tuning wording to
+these: the same examples that score a prompt cannot also tune it.
 - **Goldens**, per machine in `eval/results/<machine>/expected.json`: Gemma decodes greedily, so
   its answers are deterministic on a given GPU (another GPU may differ in floating point, hence
   per machine). The first run records them: review and commit. Later runs require the same

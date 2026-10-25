@@ -28,3 +28,5 @@ services/*/target/
 services/*/testdata/*.local.*
 # Python bytecode (services/tachyon/eval)
 __pycache__/
+/*.patch
+/*.patch

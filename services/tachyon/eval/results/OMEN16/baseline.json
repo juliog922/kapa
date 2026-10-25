@@ -1,0 +1,98 @@
+{
+ "roundtrip_s": {
+  "value": 0.2788,
+  "unit": "s",
+  "higher_better": false,
+  "engine": false
+ },
+ "load.gemma-4-e4b_s": {
+  "value": 5.9233,
+  "unit": "s",
+  "higher_better": false,
+  "engine": false
+ },
+ "load.laya-multilingual_s": {
+  "value": 1.5352,
+  "unit": "s",
+  "higher_better": false,
+  "engine": false
+ },
+ "load.granite-embedding-311m_s": {
+  "value": 0.8614,
+  "unit": "s",
+  "higher_better": false,
+  "engine": false
+ },
+ "chat.text.prefill_s": {
+  "value": 0.0298,
+  "unit": "s",
+  "higher_better": false,
+  "engine": true
+ },
+ "chat.text.prefill_tps": {
+  "value": 940.9,
+  "unit": "tok/s",
+  "higher_better": true,
+  "engine": true
+ },
+ "chat.text.decode_tps": {
+  "value": 107.3,
+  "unit": "tok/s",
+  "higher_better": true,
+  "engine": true
+ },
+ "chat.image.prefill_s": {
+  "value": 0.1489,
+  "unit": "s",
+  "higher_better": false,
+  "engine": true
+ },
+ "chat.image.prefill_tps": {
+  "value": 1840.8,
+  "unit": "tok/s",
+  "higher_better": true,
+  "engine": true
+ },
+ "chat.image.decode_tps": {
+  "value": 105.6,
+  "unit": "tok/s",
+  "higher_better": true,
+  "engine": true
+ },
+ "chat.audio.prefill_s": {
+  "value": 0.1549,
+  "unit": "s",
+  "higher_better": false,
+  "engine": true
+ },
+ "chat.audio.prefill_tps": {
+  "value": 2116.9,
+  "unit": "tok/s",
+  "higher_better": true,
+  "engine": true
+ },
+ "chat.audio.decode_tps": {
+  "value": 105.0,
+  "unit": "tok/s",
+  "higher_better": true,
+  "engine": true
+ },
+ "decide.latency_s": {
+  "value": 0.304,
+  "unit": "s",
+  "higher_better": false,
+  "engine": false
+ },
+ "embed.latency_s": {
+  "value": 0.3069,
+  "unit": "s",
+  "higher_better": false,
+  "engine": false
+ },
+ "embed.batch64_texts_per_s": {
+  "value": 197.1487,
+  "unit": "texts/s",
+  "higher_better": true,
+  "engine": false
+ }
+}

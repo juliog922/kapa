@@ -32,10 +32,20 @@ class Helpers(unittest.TestCase):
         self.assertAlmostEqual(ev.cosine([1, 0], [1, 0]), 1.0)
         self.assertAlmostEqual(ev.cosine([1, 0], [0, 1]), 0.0)
 
+    def test_order_scores(self):
+        pairs = [("pedido", "pedido"), ("pedido", "consulta"), ("saludo", "pedido"), ("saludo", "saludo")]
+        self.assertEqual(ev.order_scores(pairs), (1, 2, 2), "1 hit, 2 predicted, 2 actual")
+
+    def test_normalize(self):
+        self.assertEqual(ev.normalize("  CHAMPU RIZOS   DEFINIDOS 300ML "), "champu rizos definidos 300ml")
+
     def test_cases_are_consistent(self):
         intents = set(ev.INTENT["criteria"])
         self.assertTrue(all(intent in intents for intent, _, _ in ev.MESSAGES))
         self.assertTrue(all(0 <= want < len(ev.PRODUCTS) for _, want in ev.QUERIES))
+        for intent in intents:
+            self.assertEqual(sum(1 for i, _, _ in ev.MESSAGES if i == intent), 4, f"4 messages labelled {intent}")
+        self.assertTrue(all(is_order == (intent == "pedido") for intent, is_order, _ in ev.MESSAGES))
 
 
 if __name__ == "__main__":
