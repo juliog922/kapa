@@ -163,8 +163,9 @@ fn self_message(account: &str, nonce: u64) -> Outgoing {
     }
 }
 
-/// Prints the evidence that a sent message came back through IMAP.
-fn report_received(account: &str, email: &Email, after: Duration) {
+/// Prints the evidence that a sent message came back through IMAP, splitting the delay into
+/// Gmail delivery (SMTP accepted → filed in INBOX) and notification (filed → core has it).
+fn report_received(account: &str, email: &Email, after: Duration, sent_ms: i64) {
     let sha = email.attachments[0].sha256.iter().take(6).fold(String::new(), |mut hex, b| {
         let _ = write!(hex, "{b:02x}");
         hex
@@ -176,6 +177,11 @@ fn report_received(account: &str, email: &Email, after: Duration) {
         email.gmail_id,
         email.thread_id,
         email.size
+    );
+    eprintln!(
+        "live gmail [{account}] delay split: gmail filed it ~{}s after SMTP accepted · core had it ~{}s after gmail filed it",
+        email.internal_at - sent_ms / 1000,
+        email.received_at_ms / 1000 - email.internal_at
     );
 }
 
@@ -221,7 +227,7 @@ async fn live_gmail_self_round_trip() {
     .await
     .expect("sent message received within 180s");
     assert_envelope(&email, &account, &out, started);
-    report_received(&account, &email, sent.elapsed());
+    report_received(&account, &email, sent.elapsed(), started);
     let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM gmail_messages WHERE account = $1 AND message_id = $2")
         .bind(&account)
         .bind(&id)

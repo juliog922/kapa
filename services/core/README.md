@@ -27,11 +27,26 @@ Every account in `secrets/accounts.*.env` works like a WhatsApp account:
 `ACCOUNTS_FILE` / `ADMIN_FILE` (default `/run/secrets/core/{accounts,admin}.env`); a missing
 file means "not configured". Passwords never appear in logs or `Debug` output.
 
+## Production
+
+Core runs in `docker-compose.yml` with `services/core/secrets` mounted read-only at
+`/run/secrets/core`; `CORE_SECRETS` (default `prod`) picks `accounts.prod.env` and
+`admin.prod.env`. The container user is uid 65532, so secrets must be owned by it with mode 0400:
+
+```bash
+make deploy-secrets     # uploads services/*/secrets/*.prod.env to prike (sudo there), restarts core
+make monitor            # "Service checks" shows core: accounts, counters, last delivery delay
+```
+
+Without secrets core still starts (no accounts, admin not configured), so a deploy never
+fails because of them. For a local `make run` on OMEN16: `make -C services/core secrets-perms`.
+
 ## Health (no TCP)
 
 Core rewrites a status file every 5 s. `core --healthcheck` (container health) checks it is
 fresh; `core --status` prints it for `make monitor`: counters and every account's state and
-allowlist size; exit 2 (warning) when an account is not watching.
+allowlist size, and the last delivery delay (Gmail filed the message → core had it); exit 2
+(warning) when an account is not watching.
 
 ## Development
 

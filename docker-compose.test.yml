@@ -12,3 +12,10 @@ services:
   whatsapp:
     ports: !reset []
     restart: "no"
+  core:
+    restart: "no"
+    environment:
+      # No secrets in the stack smoke test: core starts with no accounts (Gmail is covered
+      # by `make -C services/core test`).
+      ACCOUNTS_FILE: /run/secrets/core/none.env
+      ADMIN_FILE: /run/secrets/core/none.env

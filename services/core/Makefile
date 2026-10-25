@@ -30,7 +30,7 @@ RUN_DB    := $(DOCKER) $(TTY) -u $(UID):$(GID) -v kapa-cargo-cache-$(UID):/cache
              -e TEST_DATABASE_URL=$(TEST_URL) $(if $(wildcard $(DEV_ACCOUNTS)),-e ACCOUNTS_FILE=$(DEV_ACCOUNTS)) $(TOOLS_IMG)
 RUN_PERF  := $(DOCKER) $(TTY) --privileged -u 0 -v kapa-cargo-cache-perf:/cache -e BENCH -e BENCHTIME $(TOOLS_IMG)
 
-.PHONY: help tools ready format lint check-docs test test-unit test-integration testdb testdb-stop bench build clean
+.PHONY: help tools ready format lint check-docs test test-unit test-integration testdb testdb-stop bench secrets-perms build clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "Core service targets:\n"} /^[a-zA-Z_-]+:.*##/ { printf "  \033[32m%-18s\033[0m%s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -78,6 +78,11 @@ testdb-stop: ## Remove the test database
 
 bench: tools ## Benchmarks under perf (BENCH=case BENCHTIME=1s) -> bench/report.txt
 	@rc=0; $(RUN_PERF) sh -c 'bash scripts/bench.sh; rc=$$?; chown -R $(UID):$(GID) bench; exit $$rc' || rc=$$?; exit $$rc
+
+secrets-perms: ## Local `make run`: let the container user (uid 65532) read the secrets (0400)
+	@chown 65532:65532 secrets/*.dev.env secrets/*.prod.env 2>/dev/null || sudo chown 65532:65532 secrets/*.dev.env secrets/*.prod.env
+	@chmod 0400 secrets/*.dev.env secrets/*.prod.env
+	@ls -l secrets/
 
 build: ## Build the runtime image
 	docker build --target runtime -t kapa-$(SERVICE):local .

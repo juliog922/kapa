@@ -70,7 +70,7 @@ endef
 
 .PHONY: help run stop clean format lint check-docs test test-infra test-clean bench deps \
         update-whatsmeow pair-test \
-        deploy deploy-stop deploy-clean deploy-logs deploy-logs-ui deploy-env deploy-setup monitor \
+        deploy deploy-secrets deploy-stop deploy-clean deploy-logs deploy-logs-ui deploy-env deploy-setup monitor \
         runner runner-start runner-stop runner-status runner-logs \
         check-env check-docker
 
@@ -142,6 +142,9 @@ test-infra: check-docker deps ## Stack smoke test: every container healthy, gate
 	elif [ "$$rc" != 0 ]; then \
 		printf "$(C_RED)✘ WhatsApp rejected the client or the gateway failed: see above$(C_RESET)\n"; exit 1; \
 	fi; \
+	printf "$(C_BLUE)$(C_BOLD)==>$(C_RESET) Checking core service (health + status)\n"; \
+	$(COMPOSE_TEST) exec -T core /core --healthcheck; \
+	$(COMPOSE_TEST) exec -T core /core --status; \
 	printf "$(C_GREEN)✔ Stack smoke test passed$(C_RESET)\n"
 
 test-clean: check-docker ## Force-remove leftovers of the test environments
@@ -166,6 +169,9 @@ deploy-stop: ## EMERGENCY: stop all services on the host (FORCE=1 skips prompt)
 
 deploy-clean: ## DESTRUCTIVE: remove services, images AND data volumes on the host
 	@bash scripts/deploy-clean.sh
+
+deploy-secrets: ## Upload services/*/secrets/*.prod.env to the host (asks for sudo there)
+	@bash scripts/deploy-secrets.sh
 
 deploy-env: ## Upload local .env to the host as the production config
 	@bash scripts/deploy-env.sh

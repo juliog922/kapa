@@ -68,6 +68,9 @@ pub struct Stats {
     pub sent: AtomicU64,
     /// Failed sends.
     pub send_failed: AtomicU64,
+    /// Delay of the last received message, from Gmail filing it (INTERNALDATE) to core
+    /// having it, in milliseconds.
+    pub last_delay_ms: AtomicU64,
 }
 
 /// Point-in-time view of the module for the status report.
@@ -79,6 +82,8 @@ pub struct Snapshot {
     pub counters: [u64; 5],
     /// Open bus subscriptions.
     pub subscribers: usize,
+    /// Delay of the last received message (Gmail filed → core received), milliseconds.
+    pub last_delay_ms: u64,
 }
 
 /// Shared state of the module.
@@ -121,6 +126,8 @@ impl Inner {
             log(&format!("gmail {account}: uid {} is not a message, skipped", f.uid));
             return Ok(());
         };
+        let delay = email.received_at_ms - email.internal_at * 1000;
+        self.stats.last_delay_ms.store(u64::try_from(delay).unwrap_or(0), Relaxed);
         if !self.allow.contains(account, &email.from.address) {
             self.stats.filtered.fetch_add(1, Relaxed);
             return Ok(());
@@ -295,6 +302,7 @@ impl Gmail {
                 s.send_failed.load(Relaxed),
             ],
             subscribers: self.inner.bus.receiver_count(),
+            last_delay_ms: s.last_delay_ms.load(Relaxed),
         }
     }
 }

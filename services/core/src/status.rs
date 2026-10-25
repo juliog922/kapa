@@ -15,11 +15,18 @@ pub fn report(gmail: &Snapshot, admin: Option<&str>, started_ms: i64) -> (String
     let up = Duration::from_millis(u64::try_from(crate::now_ms() - started_ms).unwrap_or(0)).as_secs();
     let _ = writeln!(out, "core · up {}h{:02}m · admin {}", up / 3600, up % 3600 / 60, admin.unwrap_or("not configured"));
     let [received, filtered, published, sent, failed] = gmail.counters;
-    let _ = writeln!(
+    let _ = write!(
         out,
         "gmail: received {received} · filtered {filtered} · published {published} · sent {sent} · send failures {failed} · streams {}",
         gmail.subscribers
     );
+    if received > 0 {
+        // u64 -> f64 is exact for any realistic delay (below 2^53 ms).
+        #[allow(clippy::cast_precision_loss)]
+        let delay = gmail.last_delay_ms as f64 / 1000.0;
+        let _ = write!(out, " · last delay {delay:.1}s (gmail filed → core)");
+    }
+    out.push('\n');
     let _ = writeln!(out, "{} account(s)", gmail.accounts.len());
     let mut code = 0;
     for (address, state, allowed) in &gmail.accounts {
@@ -72,10 +79,13 @@ mod tests {
             accounts: vec![("bot@kapalua.es".into(), state.into(), allowed)],
             counters: [5, 1, 4, 2, 0],
             subscribers: 3,
+            last_delay_ms: 1234,
         };
         let (text, code) = report(&snap("watching", 2), Some("bot@kapalua.es"), crate::now_ms());
         assert_eq!(code, 0);
-        assert!(text.contains("received 5 · filtered 1 · published 4 · sent 2 · send failures 0 · streams 3"), "{text}");
+        assert!(text.contains("received 5 · filtered 1 · published 4 · sent 2 · send failures 0 · streams 3 · last delay 1.2s"), "{text}");
+        let idle = Snapshot { accounts: vec![], counters: [0; 5], subscribers: 0, last_delay_ms: 0 };
+        assert!(!report(&idle, None, crate::now_ms()).0.contains("last delay"), "no delay before the first message");
         assert!(text.contains("bot@kapalua.es watching · 2 allowed senders") && text.contains("admin bot@kapalua.es"));
         let (text, code) = report(&snap("error: server: NO", 0), None, crate::now_ms());
         assert_eq!(code, 2);
