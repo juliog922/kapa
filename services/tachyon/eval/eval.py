@@ -5,8 +5,10 @@
     decide   laya-multilingual       typed decisions on (Spanish) customer messages
     embed    granite-embedding-311m  embeddings (EMBED=granite-embedding-97m to compare)
 
-Runs from the developer machine: every call is `ssh <host> docker exec <tachyon> /tachyon ...`,
-so it goes through the daemon exactly as production will. Standard library only.
+Every call is `docker exec <tachyon> /tachyon ...`, through the daemon exactly as production will:
+on the deployment host over SSH (make deploy-tachyon-eval), or here (EVAL_LOCAL=1: make test-gpu).
+Results are per machine (results/<machine>/): GPUs differ in speed, and greedy answers may differ
+in floating point. EVAL_BENCH=0 runs the checks only. Standard library only.
 
 Checks:   answers fixed by construction (arithmetic, a generated red image, obvious intents,
           product retrieval) must be right.
@@ -22,6 +24,7 @@ import math
 import os
 import re
 import shlex
+import socket
 import statistics
 import struct
 import subprocess
@@ -31,8 +34,12 @@ import zlib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-EXPECTED, BASELINE = HERE / "expected.json", HERE / "baseline.json"
-REPORT = HERE.parent / "testdata" / "eval-report.local.md"
+LOCAL = os.environ.get("EVAL_LOCAL") == "1"
+MACHINE = os.environ.get("EVAL_MACHINE") or socket.gethostname()
+RESULTS = HERE / "results" / MACHINE
+EXPECTED, BASELINE = RESULTS / "expected.json", RESULTS / "baseline.json"
+REPORT = HERE.parent / "testdata" / f"eval-{MACHINE}.local.md"
+BENCH = os.environ.get("EVAL_BENCH", "1") != "0"
 CHAT, DECIDE = "gemma-4-e4b", "laya-multilingual"
 EMBED = os.environ.get("EMBED") or "granite-embedding-311m"
 DIMS = {"granite-embedding-311m": 768, "granite-embedding-97m": 384}
@@ -49,12 +56,17 @@ class Call:
         self.rc, self.out, self.err, self.secs = rc, out, err, secs
 
 
+def shell(script, **kwargs):
+    """Runs a shell script on the GPU host: here (EVAL_LOCAL=1) or over SSH."""
+    remote = shlex.split(os.environ.get("KAPA_SSH", "ssh")) + [os.environ.get("DEPLOY_HOST", "prike")]
+    return subprocess.run(["sh", "-c", script] if LOCAL else remote + [script], **kwargs)
+
+
 def tachyon(*args):
-    """Runs /tachyon in the container through SSH; times it on the host, around docker exec."""
-    ssh = shlex.split(os.environ.get("KAPA_SSH", "ssh")) + [os.environ.get("DEPLOY_HOST", "prike")]
+    """Runs /tachyon in the container; times it on the GPU host, around docker exec."""
     inner = " ".join(shlex.quote(a) for a in ["docker", "exec", os.environ["TACHYON_CONTAINER"], "/tachyon", *args])
     script = f's=$(date +%s%N); {inner}; rc=$?; e=$(date +%s%N); echo "__kapa_ns $((e-s))" >&2; exit $rc'
-    p = subprocess.run(ssh + [script], capture_output=True, text=True)
+    p = shell(script, capture_output=True, text=True)
     lines = p.stderr.splitlines()
     ns = next((int(x.split()[1]) for x in reversed(lines) if x.startswith("__kapa_ns ")), 0)
     err = "\n".join(x for x in lines if not x.startswith("__kapa_ns "))
@@ -71,9 +83,7 @@ def upload(files):
             info.type, info.mode = (tarfile.DIRTYPE, 0o755) if data is None else (tarfile.REGTYPE, 0o644)
             info.size = 0 if data is None else len(data)
             tar.addfile(info, None if data is None else io.BytesIO(data))
-    ssh = shlex.split(os.environ.get("KAPA_SSH", "ssh")) + [os.environ.get("DEPLOY_HOST", "prike")]
-    cmd = f"docker cp - {shlex.quote(os.environ['TACHYON_CONTAINER'])}:/tmp"
-    subprocess.run(ssh + [cmd], input=buf.getvalue(), check=True, capture_output=True)
+    shell(f"docker cp - {shlex.quote(os.environ['TACHYON_CONTAINER'])}:/tmp", input=buf.getvalue(), check=True, capture_output=True)
 
 
 # ---- assets -----------------------------------------------------------------------------------
@@ -299,6 +309,7 @@ def bench(report, have):
 def compare(report):
     """Against baseline.json: engine timings within 5%, end-to-end within 20%."""
     if os.environ.get("SAVE_BASELINE") == "1":
+        RESULTS.mkdir(parents=True, exist_ok=True)
         BASELINE.write_text(json.dumps(report.metrics, indent=1) + "\n")
         report.say(f"• baseline saved: {BASELINE.name}")
         return
@@ -313,23 +324,36 @@ def compare(report):
             report.check(f"bench {name}", not worse, f"{new:g} {m['unit']} (baseline {old:g}, ±{tol:.0%})")
 
 
-def main():
-    report = Report()
-    have = assets()
-    upload(have)
-    report.say(f"# Tachyon evaluation · {CHAT}, {DECIDE}, {EMBED}\n")
-    for section in (text_cases, lambda r: media_cases(r, have), decide_cases, embed_cases):
-        section(report)
+def run_bench(report, have):
+    """The bench section: numbers, then the comparison with the baseline."""
     report.say("\n## Bench\n")
     bench(report, have)
     for name, m in report.metrics.items():
         report.say(f"  {name:<34} {m['value']:>10g} {m['unit']:<8}{'(engine)' if m['engine'] else '(end to end)'}")
     compare(report)
+
+
+def save(report):
+    """Records new or approved answers for review, and writes the report."""
     if report.recorded and (report.approve or set(report.recorded) - set(report.expected)):
+        RESULTS.mkdir(parents=True, exist_ok=True)
         EXPECTED.write_text(json.dumps({**report.expected, **report.recorded}, indent=1, ensure_ascii=False) + "\n")
-        report.say(f"\n• {EXPECTED.name} updated: review the answers, then commit it")
+        report.say(f"\n• {EXPECTED.relative_to(HERE)} updated: review the answers, then commit it")
     REPORT.parent.mkdir(exist_ok=True)
     REPORT.write_text("\n".join(report.lines) + "\n")
+
+
+def main():
+    report = Report()
+    have = assets()
+    upload(have)
+    gpu = tachyon("gpu").out.splitlines()
+    report.say(f"# Tachyon evaluation · {MACHINE} · {gpu[0] if gpu else 'GPU unknown'}\n{CHAT}, {DECIDE}, {EMBED}\n")
+    for section in (text_cases, lambda r: media_cases(r, have), decide_cases, embed_cases):
+        section(report)
+    if BENCH:
+        run_bench(report, have)
+    save(report)
     report.say(f"\n{'✔ all checks passed' if not report.failed else f'✘ {report.failed} check(s) failed'} · report: {REPORT}")
     return 1 if report.failed else 0
 

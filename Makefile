@@ -26,7 +26,11 @@ EXAMPLE_ENV  := .env.example
 PROD_ENV_SAFE := $(if $(wildcard $(PROD_ENV)),$(PROD_ENV),$(EXAMPLE_ENV))
 
 COMPOSE      := docker compose -f $(COMPOSE_FILE)
-PROD_PROFILES := --profile ops
+# Profiles: ops always, plus those in the env file's COMPOSE_PROFILES (gpu on prike). Compose
+# ignores COMPOSE_PROFILES whenever --profile is given, so they become flags too.
+comma        := ,
+ENV_PROFILES := $(subst $(comma), ,$(shell sed -n 's/^COMPOSE_PROFILES=//p' $(PROD_ENV_SAFE) 2>/dev/null | tr -d "\"'"))
+PROD_PROFILES := --profile ops $(addprefix --profile ,$(filter-out ops,$(ENV_PROFILES)))
 COMPOSE_PROD := $(COMPOSE) --env-file $(PROD_ENV) -p $(PROJECT) $(PROD_PROFILES)
 COMPOSE_SAFE := $(COMPOSE) --env-file $(PROD_ENV_SAFE) -p $(PROJECT) $(PROD_PROFILES)
 COMPOSE_TEST := $(COMPOSE) -f $(COMPOSE_TEST_FILE) --env-file $(DEV_ENV) -p $(TEST_PROJECT)
@@ -68,7 +72,7 @@ define log
 	@printf "$(C_BLUE)$(C_BOLD)==>$(C_RESET) %s\n" "$(1)"
 endef
 
-.PHONY: help run stop clean format lint check-docs test test-infra test-clean bench deps \
+.PHONY: help run stop clean format lint check-docs test test-infra test-gpu bench-gpu test-clean bench deps \
         update-whatsmeow pair-test \
         deploy deploy-check-gpu deploy-tachyon deploy-tachyon-eval deploy-secrets deploy-check-sqlserver deploy-sample-sqlserver deploy-sync-sqlserver sage-summary deploy-stop deploy-clean deploy-logs deploy-logs-ui deploy-env deploy-setup monitor \
         runner runner-start runner-stop runner-status runner-logs \
@@ -109,11 +113,20 @@ lint: ## Lint every service (linters, complexity, proto, generated code)
 check-docs: ## Check documentation of every service and proto contract
 	@for svc in $(SERVICES); do $(MAKE) -C services/$$svc check-docs; done
 
-test: test-infra ## Full test: stack smoke test + unit and integration tests of every service
+test: test-infra ## Full test: stack smoke test, every service's tests, Tachyon on this machine's GPU
 	@for svc in $(SERVICES); do $(MAKE) -C services/$$svc test; done
+	@$(MAKE) test-gpu
 
-bench: ## Benchmarks of every service under perf (BENCH=regex BENCHTIME=1s)
+test-gpu: check-docker ## Tachyon on this machine's GPU as deployed + its models (PULL=1 APPROVE=1 REQUIRE_GPU=1 EMBED=)
+	@DEV_ENV='$(DEV_ENV)' PULL='$(PULL)' APPROVE='$(APPROVE)' REQUIRE_GPU='$(REQUIRE_GPU)' EMBED='$(EMBED)' \
+	  EVAL_BENCH='$(EVAL_BENCH)' SAVE_BASELINE='$(SAVE_BASELINE)' bash scripts/test-gpu.sh
+
+bench-gpu: ## test-gpu plus the models' benchmark (SAVE_BASELINE=1 records this machine's baseline)
+	@$(MAKE) test-gpu EVAL_BENCH=1
+
+bench: ## Benchmarks of every service under perf (BENCH=regex BENCHTIME=1s), and the models on this GPU
 	@for svc in $(SERVICES); do $(MAKE) -C services/$$svc bench; done
+	@$(MAKE) bench-gpu
 
 deps: ## Make sure every service has resolved dependencies (go.sum, Cargo.lock...)
 	@for svc in $(SERVICES); do $(MAKE) -C services/$$svc ready; done
@@ -126,6 +139,7 @@ pair-test: ## One-time: link the WhatsApp test phone for the live tests
 
 test-infra: check-docker deps ## Stack smoke test: every container healthy, gateway protocol up to date
 	$(call log,Starting isolated test environment [$(TEST_PROJECT)])
+	@docker volume create kapa-tachyon-models >/dev/null
 	@trap '$(COMPOSE_TEST) down --volumes --rmi all --remove-orphans >/dev/null 2>&1 || true; \
 	       printf "$(C_BLUE)$(C_BOLD)==>$(C_RESET) Test environment cleaned\n"' EXIT; \
 	$(COMPOSE_TEST) up -d --build --wait; \

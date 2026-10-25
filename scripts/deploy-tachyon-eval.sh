@@ -31,5 +31,6 @@ if ((${#missing[@]})); then
 fi
 
 log "Evaluating ${MODELS[*]} on $DEPLOY_HOST (through the daemon)"
-TACHYON_CONTAINER="$id" KAPA_SSH="$KAPA_SSH" DEPLOY_HOST="$DEPLOY_HOST" EMBED="${MODELS[2]}" \
+machine="$DEPLOY_HOST"
+TACHYON_CONTAINER="$id" KAPA_SSH="$KAPA_SSH" DEPLOY_HOST="$DEPLOY_HOST" EVAL_MACHINE="$machine" EMBED="${MODELS[2]}" \
   python3 "$ROOT/services/tachyon/eval/eval.py"

@@ -53,7 +53,7 @@ a GPU (the CI stack, laptops without the toolkit) never start it.
 
 ```bash
 make deploy-check-gpu                     # driver, GPU, NVIDIA Container Toolkit, docker runtime
-# add COMPOSE_PROFILES=gpu to the production .env, then:
+# add COMPOSE_PROFILES=gpu to the production .env (make run passes it as --profile gpu), then:
 make deploy-env && make deploy            # (or merge to main: CD deploys)
 make deploy-tachyon ARGS=doctor           # inside the container: driver, GPU, memory, certificates, Hub
 make deploy-tachyon ARGS="pull gemma-4-e4b"
@@ -71,25 +71,37 @@ needed for gated models.
 | Decisions on customer messages | `laya-multilingual` (Spanish; `laya-english` is English only) |
 | Embeddings | `granite-embedding-311m` (768 dims; `EMBED=granite-embedding-97m` to compare) |
 
+Both machines have an NVIDIA GPU, so the same evaluation runs **before deploying**, on OMEN16:
+
 ```bash
-PULL=1 make deploy-tachyon-eval        # first time: pulls what is missing, then evaluates
-make deploy-tachyon-eval               # later: after a new tachyon binary, a driver update...
+PULL=1 make test-gpu                   # once: pulls the models into the volume kapa-tachyon-models
+make test                              # from then on part of every run (checks only, no bench)
+make bench-gpu SAVE_BASELINE=1         # OMEN16's bench baseline (make bench includes bench-gpu)
+PULL=1 SAVE_BASELINE=1 make deploy-tachyon-eval   # the same on prike, bench included
 ```
 
-It runs from OMEN16, every call going through the daemon on prike as production will
-(`eval/eval.py`, standard library only):
+`make test-gpu` starts tachyon on this machine's GPU exactly as deployed (image, seccomp, volumes,
+uid 65532) in its own compose project, then proves: the container gets healthy (GPU, io_uring,
+the daemon); **a second container as uid 65532, like core, is served through the shared socket and
+shared memory**, while another uid is kept out; and the models pass the evaluation. Where Docker
+has no NVIDIA runtime it is skipped with a warning (`REQUIRE_GPU=1` makes that a failure). Models
+stay in the external volume `kapa-tachyon-models`, which test cleanups never remove.
+
+Every call goes through the daemon, as production's will (`eval/eval.py`, standard library only):
 
 - **Checks** with answers fixed by construction: arithmetic and a capital in Spanish; the color
   of images it generates (red; blue and yellow); the transcription of real speech (LibriSpeech
   clips from `~/projects/tachyon`, `TACHYON_SRC=path`); Laya's intent (`pedido`, `incidencia`,
   `consulta`, `saludo`) and order flag on Kapa-style messages; product retrieval by embeddings,
   across languages too.
-- **Goldens**: Gemma decodes greedily, so its answers are deterministic. The first run records
-  them in `eval/expected.json`: review it and commit it. Later runs require the same answers;
-  `APPROVE=1` accepts deliberate changes (never a failed check).
-- **Bench**: load times; prefill and decode tok/s from the engine for text, image and audio;
-  decide and embed latency end to end (docker exec included: the round trip is reported too);
-  embedding throughput in batches of 64. `SAVE_BASELINE=1` records `eval/baseline.json`; later
-  runs fail when 5% slower (engine timings) or 20% (end to end).
+- **Goldens**, per machine in `eval/results/<machine>/expected.json`: Gemma decodes greedily, so
+  its answers are deterministic on a given GPU (another GPU may differ in floating point, hence
+  per machine). The first run records them: review and commit. Later runs require the same
+  answers; `APPROVE=1` accepts deliberate changes (never a failed check).
+- **Bench** (`make bench-gpu`, `make deploy-tachyon-eval`): load times; prefill and decode tok/s
+  from the engine for text, image and audio; decide and embed latency end to end (docker exec
+  included: the round trip is reported too); embedding throughput in batches of 64.
+  `SAVE_BASELINE=1` records `eval/results/<machine>/baseline.json`; later runs fail when 5%
+  slower (engine timings) or 20% (end to end).
 
-The report is saved in `testdata/eval-report.local.md` (gitignored).
+Reports are saved in `testdata/eval-<machine>.local.md` (gitignored).
